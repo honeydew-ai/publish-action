@@ -22,6 +22,14 @@ repos:
     rev: v1.38.0
     hooks:
       - id: yamllint
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
+        # Also cover examples/, which customers copy verbatim. The caller there
+        # references the reusable workflow by the path it has in their repo, so
+        # it only resolves because that workflow lives in .github/workflows here.
+        files: ^(\.github/workflows/|examples/)
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:

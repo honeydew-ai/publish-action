@@ -91,10 +91,14 @@ jobs:
           # ... and the Tableau and ThoughtSpot inputs
 ```
 
-Both files, ready to copy, are in [`examples/`](examples). They list **all four destinations**
-so every option is visible in one place — trim them: delete the destinations a workspace does
-not publish to, both from `targets` and from the inputs below it. Inputs for destinations not
-named in `targets` are ignored either way, so leaving them costs nothing but noise.
+Both files are ready to copy: the per-workspace caller is in
+[`examples/publish-sales.yml`](examples/publish-sales.yml), and the reusable workflow it calls
+is [`.github/workflows/honeydew-publish.yml`](.github/workflows/honeydew-publish.yml).
+
+They list **all four destinations** so every option is visible in one place — trim them:
+delete the destinations a workspace does not publish to, both from `targets` and from the
+inputs below it. Inputs for destinations not named in `targets` are ignored either way, so
+leaving them costs nothing but noise.
 
 **What this gives you.** A merge touching only `finance/` never starts the `sales` workflow.
 A merge touching both runs both. Each destination is its own job — its own pass or fail, its
