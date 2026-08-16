@@ -1,0 +1,576 @@
+# Copyright 2026 Honeydew Data Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Publish a Honeydew workspace branch to a BI tool via the Honeydew GraphQL API.
+
+Entry point of the honeydew-ai/publish-action GitHub Action.
+Uses only the Python standard library, so it runs on any GitHub runner
+without installing dependencies.
+
+Every destination is one entry in DESTINATIONS: the mutation to call, the
+arguments it takes, and the result fields to read back. The rest of this file
+is destination-agnostic, so adding a destination — another BI tool, or a data
+catalog such as Atlan — is a new entry plus its inputs in action.yml.
+"""
+
+import base64
+import dataclasses
+import enum
+import json
+import os
+import sys
+import time
+import typing
+import urllib.error
+import urllib.request
+from http import HTTPStatus
+from pathlib import Path
+
+MAIN_BRANCH = "prod"
+PUBLIC_API_PATH = "/api/public/v1/graphql"
+# Publishing builds the model in the destination tool and, for Power BI, refreshes
+# it — far slower than a read, so this is well above the validate action's timeout.
+REQUEST_TIMEOUT_SECONDS = 900
+RETRIES = 3
+RETRIED_HTTP_CODES = (429, 502, 503, 504)
+
+
+class ArgKind(enum.StrEnum):
+    """GraphQL type of a mutation argument, as declared in the mutation header."""
+
+    STRING = "String"
+    STRING_LIST = "[String!]"
+
+
+ArgValue = str | list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class Argument:
+    """One argument of a sync mutation, and the action input that fills it."""
+
+    api_name: str
+    input_name: str
+    required: bool = False
+    kind: ArgKind = ArgKind.STRING
+
+    @property
+    def env_name(self) -> str:
+        return "HONEYDEW_" + self.input_name.upper().replace("-", "_")
+
+
+@dataclasses.dataclass(frozen=True)
+class Destination:
+    """A place a workspace branch can be published to, and how to address it.
+
+    ``url_field``, ``id_field`` and ``warning_fields`` map the destination's own
+    response type onto the action's three outputs. A warning field holds the
+    error of a step that runs *after* the publish succeeded (refreshing a Power BI
+    model, tagging a Sigma version), so it never means the publish itself failed.
+    """
+
+    key: str
+    label: str
+    mutation: str
+    arguments: tuple[Argument, ...]
+    url_field: str
+    id_field: str | None = None
+    warning_fields: tuple[str, ...] = ()
+    extra_check: typing.Callable[[dict[str, ArgValue]], str] | None = None
+
+
+def _check_tableau_arguments(values: dict[str, ArgValue]) -> str:
+    """Tableau updates by id and creates by name+project; anything else is an error."""
+    updating = "existing_datasource_id" in values
+    creating = "datasource_name" in values and "project_id" in values
+    if updating and ("datasource_name" in values or "project_id" in values):
+        return (
+            "Set either 'tableau-existing-datasource-id' to update an existing data "
+            "source, or both 'tableau-datasource-name' and 'tableau-project-id' to "
+            "create one — not both."
+        )
+    if not updating and not creating:
+        return (
+            "Set 'tableau-existing-datasource-id' to update an existing data source, "
+            "or both 'tableau-datasource-name' and 'tableau-project-id' to create one."
+        )
+    return ""
+
+
+CONNECTOR = Argument("connector_name", "connector-name", required=True)
+DOMAIN = Argument("domain", "domain")
+
+DESTINATIONS: tuple[Destination, ...] = (
+    Destination(
+        key="powerbi",
+        label="Power BI",
+        mutation="sync_powerbi_datasource",
+        arguments=(
+            CONNECTOR,
+            DOMAIN,
+            Argument("model_name", "powerbi-model-name", required=True),
+            Argument("group_id", "powerbi-group-id", required=True),
+        ),
+        url_field="semantic_model_url",
+        warning_fields=("refresh_error",),
+    ),
+    Destination(
+        key="sigma",
+        label="Sigma",
+        mutation="sync_sigma_datasource",
+        arguments=(
+            CONNECTOR,
+            DOMAIN,
+            Argument("connection_id", "sigma-connection-id", required=True),
+            Argument("folder_id", "sigma-folder-id", required=True),
+            Argument("model_name", "sigma-model-name"),
+            Argument("existing_data_model_id", "sigma-existing-data-model-id"),
+            Argument("tags", "sigma-tags", kind=ArgKind.STRING_LIST),
+        ),
+        url_field="data_model_url",
+        id_field="data_model_id",
+        warning_fields=("tag_error",),
+    ),
+    Destination(
+        key="tableau",
+        label="Tableau",
+        mutation="sync_tableau_datasource",
+        arguments=(
+            CONNECTOR,
+            DOMAIN,
+            Argument("datasource_name", "tableau-datasource-name"),
+            Argument("project_id", "tableau-project-id"),
+            Argument("existing_datasource_id", "tableau-existing-datasource-id"),
+        ),
+        url_field="datasource_url",
+        extra_check=_check_tableau_arguments,
+    ),
+    Destination(
+        key="thoughtspot",
+        label="ThoughtSpot",
+        mutation="sync_thoughtspot_datasource",
+        arguments=(
+            CONNECTOR,
+            dataclasses.replace(DOMAIN, required=True),
+            Argument("connection_name", "thoughtspot-connection-name", required=True),
+            Argument("table_name", "thoughtspot-table-name"),
+        ),
+        url_field="table_url",
+        id_field="table_guid",
+    ),
+)
+
+
+def print_error(message: str) -> None:
+    print(f"::error::{escape_workflow_command(message)}")
+
+
+def print_warning(message: str) -> None:
+    print(f"::warning::{escape_workflow_command(message)}")
+
+
+def escape_workflow_command(message: str) -> str:
+    # GitHub workflow commands end at the first newline, and unescaped API-provided
+    # text could forge commands like ::add-mask:: — escape per the Actions spec.
+    return message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def fail(message: str) -> typing.NoReturn:
+    print_error(message)
+    sys.exit(1)
+
+
+class HoneydewClient:
+    def __init__(self, *, base_url: str, authorization: str) -> None:
+        if not base_url.startswith(("https://", "http://")):
+            fail(f"Invalid base-url '{base_url}': must start with https:// or http://")
+        self._endpoint = base_url.rstrip("/") + PUBLIC_API_PATH
+        self._headers = {
+            "Content-Type": "application/json",
+            "Authorization": authorization,
+            "X-Honeydew-Client": "publish-action",
+        }
+
+    @classmethod
+    def from_api_key(
+        cls,
+        *,
+        base_url: str,
+        api_key: str,
+        api_secret: str,
+    ) -> "HoneydewClient":
+        token = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
+        return cls(base_url=base_url, authorization=f"Basic {token}")
+
+    @classmethod
+    def from_token(cls, *, base_url: str, token: str) -> "HoneydewClient":
+        """Authenticate with a user bearer token — for local testing of this action."""
+        return cls(base_url=base_url, authorization=f"Bearer {token}")
+
+    def gql(
+        self,
+        query: str,
+        *,
+        variables: dict[str, ArgValue] | None = None,
+        workspace: str | None = None,
+        branch: str | None = None,
+        retries: int = RETRIES,
+    ) -> dict[str, typing.Any]:
+        """Run a GraphQL document, exiting the action on any error.
+
+        ``retries`` defaults to retrying transient failures, which is safe only for
+        idempotent operations. Publishing passes 0 — see ``publish``.
+        """
+        payload = self._request(
+            query,
+            variables=variables,
+            workspace=workspace,
+            branch=branch,
+            retries=retries,
+        )
+        if errors := payload.get("errors"):
+            fail(f"Honeydew API returned errors: {_error_messages(errors)}")
+        if (data := payload.get("data")) is None:
+            fail(f"Honeydew API response has no data: {json.dumps(payload)[:500]}")
+        return typing.cast("dict[str, typing.Any]", data)
+
+    def _request(
+        self,
+        query: str,
+        *,
+        variables: dict[str, ArgValue] | None,
+        workspace: str | None,
+        branch: str | None,
+        retries: int,
+    ) -> dict[str, typing.Any]:
+        headers = dict(self._headers)
+        if workspace:
+            headers["X-Honeydew-Workspace"] = workspace
+        if branch:
+            headers["X-Honeydew-Branch"] = branch
+        document: dict[str, typing.Any] = {"query": query}
+        if variables:
+            document["variables"] = variables
+        return self._post_with_retries(json.dumps(document).encode(), headers, retries)
+
+    def _post_with_retries(
+        self,
+        body: bytes,
+        headers: dict[str, str],
+        retries: int,
+    ) -> dict[str, typing.Any]:
+        for attempt in range(retries + 1):
+            request = urllib.request.Request(  # noqa: S310  # suspicious-url-open-usage
+                self._endpoint,
+                data=body,
+                headers=headers,
+            )
+            try:
+                with urllib.request.urlopen(  # noqa: S310  # suspicious-url-open-usage
+                    request,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ) as response:
+                    raw = response.read()
+            except urllib.error.HTTPError as error:
+                if error.code in RETRIED_HTTP_CODES and attempt < retries:
+                    time.sleep(2 ** (attempt + 1))
+                    continue
+                detail = error.read().decode(errors="replace")[:500]
+                if error.code == HTTPStatus.UNAUTHORIZED:
+                    fail(
+                        "Honeydew API authentication failed (HTTP 401). Check the "
+                        "api-key and api-secret inputs, and make sure the public "
+                        "GraphQL API is enabled for your organization.",
+                    )
+                fail(f"Honeydew API request failed with HTTP {error.code}: {detail}")
+            except (TimeoutError, urllib.error.URLError) as error:
+                if attempt < retries:
+                    time.sleep(2 ** (attempt + 1))
+                    continue
+                reason = getattr(error, "reason", error)
+                fail(f"Cannot reach the Honeydew API at {self._endpoint}: {reason}")
+            try:
+                return typing.cast("dict[str, typing.Any]", json.loads(raw))
+            except json.JSONDecodeError:
+                fail(
+                    "Honeydew API returned a non-JSON response from "
+                    f"{self._endpoint}: {raw.decode(errors='replace')[:500]}",
+                )
+        raise AssertionError
+
+
+def _error_messages(errors: list[dict[str, typing.Any]]) -> str:
+    return "; ".join(error.get("message", json.dumps(error)) for error in errors)
+
+
+def resolve_destination(target: str) -> Destination:
+    if not target:
+        fail(f"Missing required input: target. Expected one of: {_destination_keys()}.")
+    for destination in DESTINATIONS:
+        if destination.key == target:
+            return destination
+    fail(f"Unknown target '{target}'. Expected one of: {_destination_keys()}.")
+
+
+def _destination_keys() -> str:
+    return ", ".join(destination.key for destination in DESTINATIONS)
+
+
+def resolve_workspace(*, workspace_input: str, git_ref: str) -> str:
+    """Return the Honeydew workspace to publish.
+
+    Detection follows the Honeydew git branch convention: a development branch of
+    workspace "sales" named "q3-fixes" lives on the git branch "sales/q3-fixes".
+    Only the workspace is detected — the branch to publish comes from the "branch"
+    input and defaults to "prod", because the common trigger is a merged pull
+    request, whose content lands on prod.
+    """
+    if workspace_input:
+        return workspace_input
+    match git_ref.split("/"):
+        case [workspace, _]:
+            return workspace
+        case [workspace, middle, _] if middle == MAIN_BRANCH:
+            # Honeydew names system-managed branches "<workspace>/prod/<hash>".
+            return workspace
+    fail(
+        f"Cannot detect a Honeydew workspace from git branch '{git_ref}'. Honeydew "
+        "development branches are named '<workspace>/<branch>'. For other branches, "
+        "set the 'workspace' input explicitly.",
+    )
+
+
+def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
+    """Read this destination's arguments from the environment, and validate them."""
+    values: dict[str, ArgValue] = {}
+    missing: list[str] = []
+    for argument in destination.arguments:
+        raw = os.environ.get(argument.env_name, "").strip()
+        if not raw:
+            if argument.required:
+                missing.append(argument.input_name)
+            continue
+        if argument.kind is ArgKind.STRING_LIST:
+            if items := [part.strip() for part in raw.split(",") if part.strip()]:
+                values[argument.api_name] = items
+        else:
+            values[argument.api_name] = raw
+    if missing:
+        fail(
+            f"Publishing to {destination.label} requires the "
+            f"{_quoted_list(missing)} input(s).",
+        )
+    if destination.extra_check and (error := destination.extra_check(values)):
+        fail(error)
+    return values
+
+
+def _quoted_list(names: list[str]) -> str:
+    return ", ".join(f"'{name}'" for name in names)
+
+
+def build_mutation(destination: Destination, values: dict[str, ArgValue]) -> str:
+    """Build a mutation document naming only the arguments actually supplied.
+
+    Omitting an unset argument entirely, rather than passing null, keeps "not
+    provided" distinct from "explicitly cleared" for the API — which is what
+    Tableau's create-versus-update rules key off.
+    """
+    kinds = {
+        argument.api_name: argument.kind
+        for argument in destination.arguments
+        if argument.api_name in values
+    }
+    declarations = ", ".join(f"${name}: {kind}!" for name, kind in kinds.items())
+    call_arguments = ", ".join(f"{name}: ${name}" for name in kinds)
+    result_fields = "\n    ".join(_result_fields(destination))
+    return (
+        f"mutation publish({declarations}) {{\n"
+        f"  {destination.mutation}({call_arguments}) {{\n"
+        f"    {result_fields}\n"
+        f"  }}\n"
+        f"}}"
+    )
+
+
+def _result_fields(destination: Destination) -> list[str]:
+    fields = [destination.url_field]
+    if destination.id_field:
+        fields.append(destination.id_field)
+    fields.extend(destination.warning_fields)
+    return fields
+
+
+@dataclasses.dataclass(frozen=True)
+class PublishResult:
+    url: str
+    object_id: str
+    warnings: tuple[str, ...]
+
+
+def publish(
+    client: HoneydewClient,
+    destination: Destination,
+    *,
+    workspace: str,
+    branch: str,
+    values: dict[str, ArgValue],
+) -> PublishResult:
+    mutation = build_mutation(destination, values)
+    print(
+        f"Publishing workspace '{workspace}' branch '{branch}' to "
+        f"{destination.label}...",
+    )
+    # No retries: creating a data source is not idempotent, so a retry after a
+    # timeout could publish the same model twice.
+    data = client.gql(
+        mutation,
+        variables=values,
+        workspace=workspace,
+        branch=branch,
+        retries=0,
+    )
+    if (result := data.get(destination.mutation)) is None:
+        fail(
+            f"Publishing to {destination.label} returned no result. The destination "
+            "may have rejected the request — check the Honeydew connector settings.",
+        )
+    warnings = tuple(
+        f"{field}: {result[field]}"
+        for field in destination.warning_fields
+        if result.get(field)
+    )
+    return PublishResult(
+        url=str(result.get(destination.url_field) or ""),
+        object_id=(
+            str(result.get(destination.id_field) or "") if destination.id_field else ""
+        ),
+        warnings=warnings,
+    )
+
+
+def reload_workspace(
+    client: HoneydewClient,
+    *,
+    workspace: str,
+    branch: str,
+) -> None:
+    print(f"Reloading workspace '{workspace}' branch '{branch}' from git...")
+    client.gql("mutation { reset_workspace }", workspace=workspace, branch=branch)
+
+
+def write_outputs(result: PublishResult) -> None:
+    if not (output_path := os.environ.get("GITHUB_OUTPUT")):
+        return
+    # Newlines would be read as further output lines; the API-provided warning text
+    # is the only value here that can contain them.
+    values = {
+        "url": result.url,
+        "id": result.object_id,
+        "warning": " ".join(result.warnings).replace("\n", " ").replace("\r", " "),
+    }
+    with Path(output_path).open("a", encoding="utf-8") as output:
+        output.writelines(f"{name}={value}\n" for name, value in values.items())
+
+
+def write_step_summary(
+    destination: Destination,
+    result: PublishResult,
+    *,
+    workspace: str,
+    branch: str,
+    domain: str,
+) -> None:
+    if not (summary_path := os.environ.get("GITHUB_STEP_SUMMARY")):
+        return
+    scope = domain or "_(whole workspace)_"
+    outcome = "⚠️ published with warnings" if result.warnings else "✅ published"
+    lines = [
+        "## Honeydew publish",
+        "",
+        "| Destination | Workspace | Branch | Domain | Result |",
+        "|---|---|---|---|---|",
+        f"| {destination.label} | {workspace} | {branch} | {scope} | {outcome} |",
+        "",
+    ]
+    if result.url:
+        lines.append(f"[Open in {destination.label}]({result.url})")
+    if result.object_id and destination.id_field:
+        reuse_hint = (
+            f"`{destination.id_field}`: `{result.object_id}` — pass this back as the "
+            "update id on the next run so it updates this object instead of creating "
+            "another one."
+        )
+        lines.extend(["", reuse_hint])
+    lines.extend(f"- ⚠️ {warning}" for warning in result.warnings)
+    with Path(summary_path).open("a", encoding="utf-8") as summary:
+        summary.write("\n".join(lines) + "\n")
+
+
+def require_env(name: str) -> str:
+    if not (value := os.environ.get(name, "").strip()):
+        input_name = name.removeprefix("HONEYDEW_").lower().replace("_", "-")
+        fail(f"Missing required input: {input_name}")
+    return value
+
+
+def is_enabled(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"false", "0", "no"}
+
+
+def _build_client(base_url: str) -> HoneydewClient:
+    if token := os.environ.get("HONEYDEW_TOKEN", "").strip():
+        return HoneydewClient.from_token(base_url=base_url, token=token)
+    return HoneydewClient.from_api_key(
+        base_url=base_url,
+        api_key=require_env("HONEYDEW_API_KEY"),
+        api_secret=require_env("HONEYDEW_API_SECRET"),
+    )
+
+
+def main() -> None:
+    base_url = (
+        os.environ.get("HONEYDEW_BASE_URL", "").strip() or "https://api.honeydew.cloud"
+    )
+    destination = resolve_destination(os.environ.get("HONEYDEW_TARGET", "").strip())
+    workspace = resolve_workspace(
+        workspace_input=os.environ.get("HONEYDEW_WORKSPACE", "").strip(),
+        git_ref=os.environ.get("GITHUB_HEAD_REF")
+        or os.environ.get("GITHUB_REF_NAME", ""),
+    )
+    branch = os.environ.get("HONEYDEW_BRANCH", "").strip() or MAIN_BRANCH
+    values = collect_arguments(destination)
+    client = _build_client(base_url)
+
+    if is_enabled("HONEYDEW_RELOAD", default=True):
+        reload_workspace(client, workspace=workspace, branch=branch)
+    result = publish(
+        client,
+        destination,
+        workspace=workspace,
+        branch=branch,
+        values=values,
+    )
+
+    write_outputs(result)
+    write_step_summary(
+        destination,
+        result,
+        workspace=workspace,
+        branch=branch,
+        domain=str(values.get("domain") or ""),
+    )
+    for warning in result.warnings:
+        print_warning(f"[{destination.label}] {warning}")
+    print(f"Published to {destination.label}: {result.url or '(no link returned)'}")
+    if result.object_id and destination.id_field:
+        print(f"{destination.id_field}: {result.object_id}")
+    if result.warnings and is_enabled("HONEYDEW_FAIL_ON_WARNING", default=False):
+        fail(f"Publishing to {destination.label} reported warnings.")
+
+
+if __name__ == "__main__":
+    main()
