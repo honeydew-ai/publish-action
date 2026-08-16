@@ -96,20 +96,6 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             POWERBI,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_POWERBI_MODEL_NAME": "Sales Exec",
-                "HONEYDEW_POWERBI_GROUP_ID": "3f2a",
-            },
-            {
-                "connector_name": "default",
-                "model_name": "Sales Exec",
-                "group_id": "3f2a",
-            },
-            id="powerbi_without_domain",
-        ),
-        pytest.param(
-            POWERBI,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
                 "HONEYDEW_DOMAIN": "  sales  ",
                 "HONEYDEW_POWERBI_MODEL_NAME": "Sales Exec",
                 "HONEYDEW_POWERBI_GROUP_ID": "3f2a",
@@ -126,12 +112,14 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             SIGMA,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
                 "HONEYDEW_SIGMA_CONNECTION_ID": "abc",
                 "HONEYDEW_SIGMA_FOLDER_ID": "def",
                 "HONEYDEW_SIGMA_TAGS": "v1, prod ,,",
             },
             {
                 "connector_name": "default",
+                "domain": "sales",
                 "connection_id": "abc",
                 "folder_id": "def",
                 "tags": ["v1", "prod"],
@@ -142,20 +130,27 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             TABLEAU,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
                 "HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID": "ds-1",
             },
-            {"connector_name": "default", "existing_datasource_id": "ds-1"},
+            {
+                "connector_name": "default",
+                "domain": "sales",
+                "existing_datasource_id": "ds-1",
+            },
             id="tableau_update_by_id",
         ),
         pytest.param(
             TABLEAU,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
                 "HONEYDEW_TABLEAU_DATASOURCE_NAME": "Sales",
                 "HONEYDEW_TABLEAU_PROJECT_ID": "p-1",
             },
             {
                 "connector_name": "default",
+                "domain": "sales",
                 "datasource_name": "Sales",
                 "project_id": "p-1",
             },
@@ -243,6 +238,17 @@ def test_collect_arguments_fails(
 ) -> None:
     with pytest.raises(SystemExit):
         _collect(destination, **env)
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [pytest.param(d, id=d.key) for d in publish.DESTINATIONS],
+)
+def test_domain_is_required_for_every_destination(
+    destination: publish.Destination,
+) -> None:
+    required = {a.input_name for a in destination.arguments if a.required}
+    assert "domain" in required
 
 
 POWERBI_MUTATION = """mutation publish($connector_name: String!, $domain: String!, \
@@ -468,6 +474,36 @@ def test_is_enabled(value: str, default: bool, expected: bool) -> None:
         assert publish.is_enabled("HONEYDEW_FLAG", default=default) is expected
 
 
+@pytest.mark.parametrize(
+    ("attempt", "retry_after", "expected"),
+    [
+        pytest.param(0, None, 1.0, id="first_wait_is_the_minimum"),
+        pytest.param(1, None, 2.0, id="doubles"),
+        pytest.param(2, None, 4.0, id="doubles_again"),
+        pytest.param(4, None, 16.0, id="still_below_the_cap"),
+        pytest.param(10, None, 30.0, id="capped_at_max"),
+        pytest.param(0, "7", 7.0, id="retry_after_wins"),
+        pytest.param(0, " 7 ", 7.0, id="retry_after_is_stripped"),
+        pytest.param(0, "900", 60.0, id="retry_after_is_capped"),
+        pytest.param(3, "-1", 8.0, id="negative_retry_after_ignored"),
+        pytest.param(
+            3,
+            "Wed, 21 Oct 2026 07:28:00 GMT",
+            8.0,
+            id="http_date_form_falls_back_to_backoff",
+        ),
+    ],
+)
+def test_retry_delay(attempt: int, retry_after: str | None, expected: float) -> None:
+    assert publish.retry_delay(attempt, retry_after) == expected
+
+
+def test_backoff_schedule_outlasts_a_brief_api_restart() -> None:
+    """The five retries wait 1+2+4+8+16 = 31s in total, on top of the requests."""
+    waits = [publish.retry_delay(attempt, None) for attempt in range(publish.RETRIES)]
+    assert waits == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+
 ENDPOINT = "https://api.example.com/api/public/v1/graphql"
 
 
@@ -551,6 +587,24 @@ def test_retry_count_is_per_request(retries: int, expected_calls: int) -> None:
     ) as urlopen, mock.patch("time.sleep"), pytest.raises(SystemExit):
         _client().gql("query {}", retries=retries)
     assert urlopen.call_count == expected_calls
+
+
+def test_retry_after_header_drives_the_sleep() -> None:
+    headers = email.message.Message()
+    headers["Retry-After"] = "12"
+    rate_limited = urllib.error.HTTPError(
+        url=ENDPOINT,
+        code=429,
+        msg="",
+        hdrs=headers,
+        fp=io.BytesIO(b"slow down"),
+    )
+    with mock.patch(
+        "urllib.request.urlopen",
+        side_effect=[rate_limited, _response(b'{"data": {"ok": true}}')],
+    ), mock.patch("time.sleep") as sleep:
+        assert _client().gql("query {}") == {"ok": True}
+    assert sleep.call_args_list == [mock.call(12.0)]
 
 
 def test_unauthorized_is_not_retried() -> None:

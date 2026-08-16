@@ -37,10 +37,8 @@ inputs:
     required: false
     default: 'prod'
   domain:
-    description: >-
-      Domain to publish. Omit to publish the whole workspace model. Required
-      when target is "thoughtspot".
-    required: false
+    description: 'Domain to publish.'
+    required: true
   connector-name:
     description: >-
       Name of the connector configured in Honeydew for the target tool. A

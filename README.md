@@ -43,10 +43,54 @@ jobs:
 The workspace is detected from the merged branch name, and the Honeydew branch defaults to
 `prod` — the branch a merge produces.
 
-### Publishing to several destinations
+### Publishing two domains to two destinations
 
-Each step publishes one domain to one destination. Use a matrix to fan out, which also gives
-you a separate pass/fail per destination:
+Each step publishes one domain to one destination, so publishing `sales_exec` to Power BI and
+`sales_ops` to Tableau is two steps. Writing them out separately is the clearest form when
+the destinations need different inputs:
+
+```yaml
+# .github/workflows/publish-honeydew.yml
+name: Publish Honeydew Workspace
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish sales_exec to Power BI
+        uses: honeydew-ai/publish-action@v1
+        with:
+          api-key: ${{ secrets.HONEYDEW_API_KEY }}
+          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          target: powerbi
+          domain: sales_exec
+          powerbi-model-name: Sales Exec
+          powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
+
+      - name: Publish sales_ops to Tableau
+        uses: honeydew-ai/publish-action@v1
+        with:
+          api-key: ${{ secrets.HONEYDEW_API_KEY }}
+          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          target: tableau
+          domain: sales_ops
+          # Updates the existing data source. On the first run, swap this for
+          # tableau-datasource-name + tableau-project-id to create it.
+          tableau-existing-datasource-id: ${{ vars.TABLEAU_SALES_OPS_ID }}
+```
+
+Steps run in order, and a failure stops the ones after it. To publish them independently —
+each with its own pass or fail in the GitHub UI, and running in parallel — use a matrix
+instead:
 
 ```yaml
 jobs:
@@ -59,7 +103,7 @@ jobs:
         include:
           - target: powerbi
             domain: sales_exec
-          - target: thoughtspot
+          - target: tableau
             domain: sales_ops
     steps:
       - uses: honeydew-ai/publish-action@v1
@@ -70,10 +114,12 @@ jobs:
           domain: ${{ matrix.domain }}
           powerbi-model-name: Sales Exec
           powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
-          thoughtspot-connection-name: ${{ vars.THOUGHTSPOT_CONNECTION }}
+          tableau-existing-datasource-id: ${{ vars.TABLEAU_SALES_OPS_ID }}
 ```
 
 Inputs for other destinations are ignored, so one step definition can serve the whole matrix.
+The trade-off is that every destination's inputs share one block, which gets unwieldy once
+they differ much — prefer separate steps in that case.
 
 ### Pinning a version
 
@@ -162,7 +208,7 @@ below take.
 | `base-url` | no | `https://api.honeydew.cloud` | Honeydew API base URL. Only set this if your organization uses a custom hostname (see **Settings > API** in the Honeydew UI). |
 | `workspace` | no | auto-detected | Honeydew workspace to publish. |
 | `branch` | no | `prod` | Honeydew branch to publish. |
-| `domain` | no | whole workspace | Domain to publish. Required for `thoughtspot`. |
+| `domain` | yes | | Domain to publish. |
 | `connector-name` | no | `default` | Name of the connector configured in Honeydew for the target tool. |
 | `reload` | no | `true` | Reload the workspace from git before publishing. |
 | `fail-on-warning` | no | `false` | Fail the step when the publish succeeded but a follow-up step reported an error. |

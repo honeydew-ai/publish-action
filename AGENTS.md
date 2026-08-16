@@ -21,27 +21,22 @@ client-layer bugs in both.
 
 Every destination is one `Destination` entry in `DESTINATIONS` in `publish.py`:
 the mutation to call, its arguments, and the result fields to read back. The rest
-of the file is destination-agnostic, so a new BI tool — or a data catalog such as
-Atlan (`sync_atlan`) — needs no new branching.
+of the file is destination-agnostic, so a new destination needs no new branching.
 
 1. Add the `Destination` entry, mapping each mutation argument to an `Argument`
    with its action input name.
 2. Add those inputs to `action.yml`, prefixed with the destination key
-   (`atlan-connection-qualified-name`), and pass them through in the `env:` block.
+   (`<destination>-<argument>`), and pass them through in the `env:` block.
 3. Add a row to the README's per-destination input table and to the
    "Updating versus duplicating" table.
 4. Add parametrized cases to the `collect_arguments`, `build_mutation` and
    `publish` tests.
 
 Keep destination-specific logic in the descriptor, not in `if target == ...`
-branches. Argument combinations a single `required` flag cannot express go in an
+branches. `Argument` carries the API-side name separately from the input name, so
+a mutation that spells a shared concept differently needs no special case.
+Argument combinations a single `required` flag cannot express go in an
 `extra_check` (see `_check_tableau_arguments`).
-
-Some destinations do not fit the shared inputs: `sync_atlan` takes no `domain` at
-all, and `sync_quicksight_datasource` names its connector argument `name` rather
-than `connector_name`. The descriptor already carries the API-side name per
-argument, so both are expressible — but a destination with no `domain` needs its
-own handling of the `domain` input rather than silently ignoring it.
 
 ## Hard Constraints
 

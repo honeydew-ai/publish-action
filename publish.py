@@ -9,8 +9,8 @@ without installing dependencies.
 
 Every destination is one entry in DESTINATIONS: the mutation to call, the
 arguments it takes, and the result fields to read back. The rest of this file
-is destination-agnostic, so adding a destination — another BI tool, or a data
-catalog such as Atlan — is a new entry plus its inputs in action.yml.
+is destination-agnostic, so adding a destination is a new entry plus its
+inputs in action.yml.
 """
 
 import base64
@@ -31,8 +31,17 @@ PUBLIC_API_PATH = "/api/public/v1/graphql"
 # Publishing builds the model in the destination tool and, for Power BI, refreshes
 # it — far slower than a read, so this is well above the validate action's timeout.
 REQUEST_TIMEOUT_SECONDS = 900
-RETRIES = 3
+RETRIES = 5
 RETRIED_HTTP_CODES = (429, 502, 503, 504)
+# Exponential backoff bounded to a maximum single wait, matching the Honeydew
+# server's own connectors (tenacity wait_exponential(multiplier=1, min=1, max=30)).
+BACKOFF_MULTIPLIER_SECONDS = 1.0
+BACKOFF_MIN_SECONDS = 1.0
+BACKOFF_MAX_SECONDS = 30.0
+# A server-supplied Retry-After wins over the backoff, but is not trusted unbounded.
+MAX_RETRY_AFTER_SECONDS = 60.0
+
+WORKFLOW_COMMAND_ESCAPES = str.maketrans({"%": "%25", "\r": "%0D", "\n": "%0A"})
 
 
 class ArgKind(enum.StrEnum):
@@ -98,7 +107,9 @@ def _check_tableau_arguments(values: dict[str, ArgValue]) -> str:
 
 
 CONNECTOR = Argument("connector_name", "connector-name", required=True)
-DOMAIN = Argument("domain", "domain")
+# Required for every destination, though the API accepts publishing a whole workspace:
+# a BI model built from an ungoverned full workspace is rarely what anyone wants.
+DOMAIN = Argument("domain", "domain", required=True)
 
 DESTINATIONS: tuple[Destination, ...] = (
     Destination(
@@ -151,7 +162,7 @@ DESTINATIONS: tuple[Destination, ...] = (
         mutation="sync_thoughtspot_datasource",
         arguments=(
             CONNECTOR,
-            dataclasses.replace(DOMAIN, required=True),
+            DOMAIN,
             Argument("connection_name", "thoughtspot-connection-name", required=True),
             Argument("table_name", "thoughtspot-table-name"),
         ),
@@ -170,9 +181,16 @@ def print_warning(message: str) -> None:
 
 
 def escape_workflow_command(message: str) -> str:
-    # GitHub workflow commands end at the first newline, and unescaped API-provided
-    # text could forge commands like ::add-mask:: — escape per the Actions spec.
-    return message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    """Percent-encode the characters that terminate or forge a workflow command.
+
+    GitHub has no library for this and no alternative encoding: a command ends at
+    the first newline, so unescaped API-provided text could forge a second command
+    such as ``::add-mask::``. The Actions spec defines exactly these three
+    replacements. A translation table applies them in one pass, so — unlike chained
+    ``str.replace`` calls — the percent signs introduced here cannot be re-escaped
+    by a later step.
+    """
+    return message.translate(WORKFLOW_COMMAND_ESCAPES)
 
 
 def fail(message: str) -> typing.NoReturn:
@@ -273,7 +291,7 @@ class HoneydewClient:
                     raw = response.read()
             except urllib.error.HTTPError as error:
                 if error.code in RETRIED_HTTP_CODES and attempt < retries:
-                    time.sleep(2 ** (attempt + 1))
+                    time.sleep(retry_delay(attempt, error.headers.get("Retry-After")))
                     continue
                 detail = error.read().decode(errors="replace")[:500]
                 if error.code == HTTPStatus.UNAUTHORIZED:
@@ -285,7 +303,7 @@ class HoneydewClient:
                 fail(f"Honeydew API request failed with HTTP {error.code}: {detail}")
             except (TimeoutError, urllib.error.URLError) as error:
                 if attempt < retries:
-                    time.sleep(2 ** (attempt + 1))
+                    time.sleep(retry_delay(attempt, None))
                     continue
                 reason = getattr(error, "reason", error)
                 fail(f"Cannot reach the Honeydew API at {self._endpoint}: {reason}")
@@ -297,6 +315,32 @@ class HoneydewClient:
                     f"{self._endpoint}: {raw.decode(errors='replace')[:500]}",
                 )
         raise AssertionError
+
+
+def retry_delay(attempt: int, retry_after: str | None) -> float:
+    """Seconds to wait before the next attempt: Retry-After if usable, else backoff."""
+    if (honored := _parse_retry_after(retry_after)) is not None:
+        return honored
+    # 2.0** rather than 2**: int**int is Any to mypy, since a negative exponent floats.
+    backoff = BACKOFF_MULTIPLIER_SECONDS * 2.0**attempt
+    return min(BACKOFF_MAX_SECONDS, max(BACKOFF_MIN_SECONDS, backoff))
+
+
+def _parse_retry_after(retry_after: str | None) -> float | None:
+    """Read Retry-After as delay-seconds, capped, ignoring the HTTP-date form.
+
+    Trusting an HTTP-date would mean trusting the server's clock against the
+    runner's, so that form falls back to exponential backoff instead.
+    """
+    if retry_after is None:
+        return None
+    try:
+        seconds = float(retry_after.strip())
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
 
 
 def _error_messages(errors: list[dict[str, typing.Any]]) -> str:
@@ -483,14 +527,13 @@ def write_step_summary(
 ) -> None:
     if not (summary_path := os.environ.get("GITHUB_STEP_SUMMARY")):
         return
-    scope = domain or "_(whole workspace)_"
     outcome = "⚠️ published with warnings" if result.warnings else "✅ published"
     lines = [
         "## Honeydew publish",
         "",
         "| Destination | Workspace | Branch | Domain | Result |",
         "|---|---|---|---|---|",
-        f"| {destination.label} | {workspace} | {branch} | {scope} | {outcome} |",
+        f"| {destination.label} | {workspace} | {branch} | {domain} | {outcome} |",
         "",
     ]
     if result.url:
