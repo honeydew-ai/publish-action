@@ -39,11 +39,19 @@ jobs:
     with:
       workspace: sales
       domain: sales_exec
-      targets: '["powerbi", "sigma"]'   # which destinations this workspace uses
+
+      # One job per destination listed here. Keep only the ones you use.
+      targets: '["powerbi", "sigma", "tableau", "thoughtspot"]'
+
       powerbi-model-name: Sales Exec
       powerbi-group-id: 3f2a1b4c-...
+
       sigma-connection-id: abc123
       sigma-folder-id: def456
+
+      tableau-existing-datasource-id: 7a8b9c00-...
+
+      thoughtspot-connection-name: honeydew
     secrets: inherit
 ```
 
@@ -83,10 +91,10 @@ jobs:
           # ... and the Tableau and ThoughtSpot inputs
 ```
 
-Both files, ready to copy, are in [`examples/`](examples). The reusable one covers **all four
-destinations**; each caller names the ones it wants in `targets` and fills in only those
-inputs. Inputs for destinations you are not publishing to stay empty and are ignored, so you
-can leave them in place or delete the ones your organization never uses.
+Both files, ready to copy, are in [`examples/`](examples). They list **all four destinations**
+so every option is visible in one place — trim them: delete the destinations a workspace does
+not publish to, both from `targets` and from the inputs below it. Inputs for destinations not
+named in `targets` are ignored either way, so leaving them costs nothing but noise.
 
 **What this gives you.** A merge touching only `finance/` never starts the `sales` workflow.
 A merge touching both runs both. Each destination is its own job — its own pass or fail, its

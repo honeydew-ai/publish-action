@@ -6,9 +6,11 @@
 # changes at run time, so no token and no API call are involved.
 #
 # Everything else lives in the reusable workflow, so adding a workspace is this
-# file and nothing more. List the destinations you want in "targets", and fill in
-# only those destinations' inputs — this example publishes to Power BI and Sigma,
-# so it sets no Tableau or ThoughtSpot inputs at all.
+# file and nothing more.
+#
+# This example lists all four destinations so you can see every option in one
+# place. Trim it: delete the destinations this workspace does not publish to,
+# both from "targets" and from the inputs below.
 ---
 name: Publish Honeydew — sales
 
@@ -28,14 +30,31 @@ jobs:
     with:
       workspace: sales
       domain: sales_exec
-      targets: '["powerbi", "sigma"]'
 
+      # One job runs per destination listed here. Keep only the ones you use.
+      targets: '["powerbi", "sigma", "tableau", "thoughtspot"]'
+
+      # --- Power BI -------------------------------------------------------
+      # Publishing again with the same model name updates that model.
       powerbi-model-name: Sales Exec
       powerbi-group-id: 3f2a1b4c-0000-0000-0000-000000000000
 
+      # --- Sigma ----------------------------------------------------------
       sigma-connection-id: abc123
       sigma-folder-id: def456
       # After the first run, take the id from the job summary and set it here,
       # or Sigma creates a new data model on every publish.
       # sigma-existing-data-model-id: ghi789
+
+      # --- Tableau --------------------------------------------------------
+      # Either the id of an existing data source, to update it...
+      tableau-existing-datasource-id: 7a8b9c00-0000-0000-0000-000000000000
+      # ...or a name and a project, to create one. Not both.
+      # tableau-datasource-name: Sales Exec
+      # tableau-project-id: 1d2e3f00-0000-0000-0000-000000000000
+
+      # --- ThoughtSpot ----------------------------------------------------
+      # Publishing again with the same table name updates that table.
+      thoughtspot-connection-name: honeydew
+      # thoughtspot-table-name: Sales Exec
     secrets: inherit
