@@ -18,3 +18,16 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
       - run: uv pip install --system -r requirements-test.txt
       - run: pytest -v
+
+      # Customers copy examples/ verbatim, so a broken one is worse than none.
+      # actionlint only looks in .github/workflows, and the caller references the
+      # reusable workflow by the path it will have in *their* repository — so
+      # stage both there, in a throwaway repo, and lint them as a pair.
+      - name: Lint the example workflows
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          staging="$(mktemp -d)"
+          mkdir -p "$staging/.github/workflows"
+          cp examples/*.yml "$staging/.github/workflows/"
+          git -C "$staging" init -q
+          (cd "$staging" && "$GITHUB_WORKSPACE/actionlint")

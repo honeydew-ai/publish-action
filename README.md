@@ -39,6 +39,7 @@ jobs:
     with:
       workspace: sales
       domain: sales_exec
+      targets: '["powerbi", "sigma"]'   # which destinations this workspace uses
       powerbi-model-name: Sales Exec
       powerbi-group-id: 3f2a1b4c-...
       sigma-connection-id: abc123
@@ -56,16 +57,17 @@ on:
     inputs:
       workspace: {required: true, type: string}
       domain: {required: true, type: string}
-      # ... the destination inputs
+      targets: {required: true, type: string}   # JSON array of destinations
+      # ... every destination's inputs, all optional
 
 jobs:
   publish:
     name: ${{ inputs.domain }} → ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false           # one destination failing must not cancel the other
+      fail-fast: false           # one destination failing must not cancel the others
       matrix:
-        target: [powerbi, sigma]
+        target: ${{ fromJSON(inputs.targets) }}
     steps:
       - uses: honeydew-ai/publish-action@v1
         with:
@@ -78,15 +80,18 @@ jobs:
           powerbi-group-id: ${{ inputs.powerbi-group-id }}
           sigma-connection-id: ${{ inputs.sigma-connection-id }}
           sigma-folder-id: ${{ inputs.sigma-folder-id }}
+          # ... and the Tableau and ThoughtSpot inputs
 ```
 
-Both files, ready to copy, are in [`examples/`](examples).
+Both files, ready to copy, are in [`examples/`](examples). The reusable one covers **all four
+destinations**; each caller names the ones it wants in `targets` and fills in only those
+inputs. Inputs for destinations you are not publishing to stay empty and are ignored, so you
+can leave them in place or delete the ones your organization never uses.
 
 **What this gives you.** A merge touching only `finance/` never starts the `sales` workflow.
 A merge touching both runs both. Each destination is its own job — its own pass or fail, its
 own log, and its own **Re-run failed jobs** button — so a Sigma outage never hides or blocks
-the Power BI publish. Inputs belonging to the other destination are ignored, which is what
-lets one step definition serve the whole matrix.
+the Power BI publish.
 
 <details>
 <summary>One workflow for many workspaces</summary>
