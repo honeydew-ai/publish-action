@@ -1,0 +1,173 @@
+name: 'Honeydew Publish'
+description: >-
+  Publish a Honeydew semantic-layer workspace branch to a BI tool — Power BI,
+  Sigma, Tableau or ThoughtSpot — using the Honeydew GraphQL API.
+author: 'Honeydew Data Inc.'
+branding:
+  icon: 'upload-cloud'
+  color: 'green'
+
+inputs:
+  api-key:
+    description: 'Honeydew API key name. Store it as a GitHub secret.'
+    required: true
+  api-secret:
+    description: 'Honeydew API key secret. Store it as a GitHub secret.'
+    required: true
+  base-url:
+    description: >-
+      Base URL of the Honeydew API. Only set this if your organization uses a
+      custom Honeydew hostname (see Settings > API in the Honeydew UI).
+    required: false
+    default: 'https://api.honeydew.cloud'
+  target:
+    description: >-
+      Where to publish: "powerbi", "sigma", "tableau" or "thoughtspot".
+    required: true
+  workspace:
+    description: >-
+      Honeydew workspace name to publish. When omitted, it is detected from the
+      git branch name (Honeydew development branches are named
+      "<workspace>/<branch>").
+    required: false
+  branch:
+    description: >-
+      Honeydew branch to publish. Defaults to "prod", which is what a merged
+      pull request produces. Set it to publish a development branch instead.
+    required: false
+    default: 'prod'
+  domain:
+    description: 'Domain to publish.'
+    required: true
+  connector-name:
+    description: >-
+      Name of the connector configured in Honeydew for the target tool. A
+      connector configured through the Honeydew UI is named "default".
+    required: false
+    default: 'default'
+  reload:
+    description: >-
+      Reload the workspace from git before publishing, so the published model
+      reflects the latest commit. Set to "false" to publish what the API key's
+      session already holds.
+    required: false
+    default: 'true'
+  fail-on-warning:
+    description: >-
+      Fail the step when the publish succeeds but a follow-up step reports an
+      error — refreshing the Power BI model, or applying Sigma version tags.
+    required: false
+    default: 'false'
+
+  # --- Power BI -------------------------------------------------------------
+  powerbi-model-name:
+    description: >-
+      Power BI: name of the semantic model to create or update. Publishing
+      again with the same name updates that model.
+    required: false
+  powerbi-group-id:
+    description: >-
+      Power BI: ID of the Power BI workspace to publish into. List them with
+      the powerbi_workspaces GraphQL query.
+    required: false
+
+  # --- Sigma ----------------------------------------------------------------
+  sigma-connection-id:
+    description: >-
+      Sigma: ID of the Sigma connection to the data warehouse. List them with
+      the sigma_connections GraphQL query.
+    required: false
+  sigma-folder-id:
+    description: >-
+      Sigma: ID of the Sigma folder to publish into. List them with the
+      sigma_folders GraphQL query.
+    required: false
+  sigma-model-name:
+    description: >-
+      Sigma: name of the data model. Defaults to the display name of the domain.
+    required: false
+  sigma-existing-data-model-id:
+    description: >-
+      Sigma: ID of the data model to update. Omit to create a new data model —
+      the ID of the created model is reported as the "id" output, and Sigma has
+      no lookup by name, so pass it back here to update it on later runs.
+    required: false
+  sigma-tags:
+    description: 'Sigma: comma-separated version tags to apply to the published version.'
+    required: false
+
+  # --- Tableau --------------------------------------------------------------
+  tableau-datasource-name:
+    description: >-
+      Tableau: name of the data source to create. Requires
+      "tableau-project-id", and is mutually exclusive with
+      "tableau-existing-datasource-id".
+    required: false
+  tableau-project-id:
+    description: >-
+      Tableau: ID of the project to create the data source in. List them with
+      the tableau_projects GraphQL query.
+    required: false
+  tableau-existing-datasource-id:
+    description: >-
+      Tableau: ID of the data source to update. List them with the
+      tableau_honeydew_datasources GraphQL query.
+    required: false
+
+  # --- ThoughtSpot ----------------------------------------------------------
+  thoughtspot-connection-name:
+    description: >-
+      ThoughtSpot: name of the Honeydew connection in ThoughtSpot. List them
+      with the thoughtspot_connections GraphQL query.
+    required: false
+  thoughtspot-table-name:
+    description: >-
+      ThoughtSpot: name of the table to create or update. Defaults to the
+      display name of the domain.
+    required: false
+
+outputs:
+  url:
+    description: 'Link to the published object in the target tool.'
+    value: ${{ steps.publish.outputs.url }}
+  id:
+    description: >-
+      ID of the published object, for the tools that report one (Sigma data
+      model, ThoughtSpot table).
+    value: ${{ steps.publish.outputs.id }}
+  warning:
+    description: >-
+      Errors reported by follow-up steps that ran after a successful publish,
+      empty when there were none.
+    value: ${{ steps.publish.outputs.warning }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: publish
+      name: Publish Honeydew workspace
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/publish.py"
+      env:
+        HONEYDEW_API_KEY: ${{ inputs.api-key }}
+        HONEYDEW_API_SECRET: ${{ inputs.api-secret }}
+        HONEYDEW_BASE_URL: ${{ inputs.base-url }}
+        HONEYDEW_TARGET: ${{ inputs.target }}
+        HONEYDEW_WORKSPACE: ${{ inputs.workspace }}
+        HONEYDEW_BRANCH: ${{ inputs.branch }}
+        HONEYDEW_DOMAIN: ${{ inputs.domain }}
+        HONEYDEW_CONNECTOR_NAME: ${{ inputs.connector-name }}
+        HONEYDEW_RELOAD: ${{ inputs.reload }}
+        HONEYDEW_FAIL_ON_WARNING: ${{ inputs.fail-on-warning }}
+        HONEYDEW_POWERBI_MODEL_NAME: ${{ inputs.powerbi-model-name }}
+        HONEYDEW_POWERBI_GROUP_ID: ${{ inputs.powerbi-group-id }}
+        HONEYDEW_SIGMA_CONNECTION_ID: ${{ inputs.sigma-connection-id }}
+        HONEYDEW_SIGMA_FOLDER_ID: ${{ inputs.sigma-folder-id }}
+        HONEYDEW_SIGMA_MODEL_NAME: ${{ inputs.sigma-model-name }}
+        HONEYDEW_SIGMA_EXISTING_DATA_MODEL_ID: ${{ inputs.sigma-existing-data-model-id }}
+        HONEYDEW_SIGMA_TAGS: ${{ inputs.sigma-tags }}
+        HONEYDEW_TABLEAU_DATASOURCE_NAME: ${{ inputs.tableau-datasource-name }}
+        HONEYDEW_TABLEAU_PROJECT_ID: ${{ inputs.tableau-project-id }}
+        HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID: ${{ inputs.tableau-existing-datasource-id }}
+        HONEYDEW_THOUGHTSPOT_CONNECTION_NAME: ${{ inputs.thoughtspot-connection-name }}
+        HONEYDEW_THOUGHTSPOT_TABLE_NAME: ${{ inputs.thoughtspot-table-name }}
