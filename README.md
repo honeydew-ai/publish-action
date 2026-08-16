@@ -14,49 +14,20 @@ For validating a workspace *before* it merges, see
 
 ## Usage
 
-Publish to Power BI whenever a pull request is merged into the default branch:
+Add **one workflow per workspace** to the repository that stores your Honeydew metadata. The
+`paths:` filter is the whole gate — GitHub runs the workflow only when the merged pull
+request touched that workspace's directory, so nothing has to detect changes at run time and
+no token is involved.
 
 ```yaml
-# .github/workflows/honeydew-publish.yml
-name: Publish Honeydew Workspace
+# .github/workflows/publish-sales.yml
+name: Publish Honeydew — sales
 
 on:
   pull_request:
     types: [closed]
     branches: [main]
-
-jobs:
-  publish:
-    if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: honeydew-ai/publish-action@v1
-        with:
-          api-key: ${{ secrets.HONEYDEW_API_KEY }}
-          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
-          target: powerbi
-          domain: sales_exec
-          powerbi-model-name: Sales Exec
-          powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
-```
-
-The workspace is detected from the merged branch name, and the Honeydew branch defaults to
-`prod` — the branch a merge produces.
-
-### Publishing two domains to two destinations
-
-Each step publishes one domain to one destination, so publishing `sales_exec` to Power BI and
-`sales_ops` to Tableau is two steps. Writing them out separately is the clearest form when
-the destinations need different inputs:
-
-```yaml
-# .github/workflows/publish-honeydew.yml
-name: Publish Honeydew Workspace
-
-on:
-  pull_request:
-    types: [closed]
-    branches: [main]
+    paths: ['sales/**']          # ← the gate
 
 permissions:
   contents: read
@@ -64,62 +35,90 @@ permissions:
 jobs:
   publish:
     if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish sales_exec to Power BI
-        uses: honeydew-ai/publish-action@v1
-        with:
-          api-key: ${{ secrets.HONEYDEW_API_KEY }}
-          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
-          target: powerbi
-          domain: sales_exec
-          powerbi-model-name: Sales Exec
-          powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
+    uses: ./.github/workflows/honeydew-publish.yml
+    with:
+      workspace: sales
+      domain: sales_exec
 
-      - name: Publish sales_ops to Tableau
-        uses: honeydew-ai/publish-action@v1
-        with:
-          api-key: ${{ secrets.HONEYDEW_API_KEY }}
-          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
-          target: tableau
-          domain: sales_ops
-          # Updates the existing data source. On the first run, swap this for
-          # tableau-datasource-name + tableau-project-id to create it.
-          tableau-existing-datasource-id: ${{ vars.TABLEAU_SALES_OPS_ID }}
+      # One job per destination listed here. Keep only the ones you use.
+      targets: '["powerbi", "sigma", "tableau", "thoughtspot"]'
+
+      powerbi-model-name: Sales Exec
+      powerbi-group-id: 3f2a1b4c-...
+
+      sigma-connection-id: abc123
+      sigma-folder-id: def456
+
+      tableau-existing-datasource-id: 7a8b9c00-...
+
+      thoughtspot-connection-name: honeydew
+    secrets: inherit
 ```
 
-Steps run in order, and a failure stops the ones after it. To publish them independently —
-each with its own pass or fail in the GitHub UI, and running in parallel — use a matrix
-instead:
+The publish logic lives once in a reusable workflow that every per-workspace file calls, so
+adding a workspace is one small file and nothing else:
 
 ```yaml
+# .github/workflows/honeydew-publish.yml
+on:
+  workflow_call:
+    inputs:
+      workspace: {required: true, type: string}
+      domain: {required: true, type: string}
+      targets: {required: true, type: string}   # JSON array of destinations
+      # ... every destination's inputs, all optional
+
 jobs:
   publish:
-    if: github.event.pull_request.merged == true
+    name: ${{ inputs.domain }} → ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: false           # one destination failing must not cancel the others
       matrix:
-        include:
-          - target: powerbi
-            domain: sales_exec
-          - target: tableau
-            domain: sales_ops
+        target: ${{ fromJSON(inputs.targets) }}
     steps:
       - uses: honeydew-ai/publish-action@v1
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: ${{ inputs.workspace }}
+          domain: ${{ inputs.domain }}
           target: ${{ matrix.target }}
-          domain: ${{ matrix.domain }}
-          powerbi-model-name: Sales Exec
-          powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
-          tableau-existing-datasource-id: ${{ vars.TABLEAU_SALES_OPS_ID }}
+          powerbi-model-name: ${{ inputs.powerbi-model-name }}
+          powerbi-group-id: ${{ inputs.powerbi-group-id }}
+          sigma-connection-id: ${{ inputs.sigma-connection-id }}
+          sigma-folder-id: ${{ inputs.sigma-folder-id }}
+          # ... and the Tableau and ThoughtSpot inputs
 ```
 
-Inputs for other destinations are ignored, so one step definition can serve the whole matrix.
-The trade-off is that every destination's inputs share one block, which gets unwieldy once
-they differ much — prefer separate steps in that case.
+Both files are ready to copy: the per-workspace caller is in
+[`examples/publish-sales.yml`](examples/publish-sales.yml), and the reusable workflow it calls
+is [`.github/workflows/honeydew-publish.yml`](.github/workflows/honeydew-publish.yml).
+
+They list **all four destinations** so every option is visible in one place — trim them:
+delete the destinations a workspace does not publish to, both from `targets` and from the
+inputs below it. Inputs for destinations not named in `targets` are ignored either way, so
+leaving them costs nothing but noise.
+
+**What this gives you.** A merge touching only `finance/` never starts the `sales` workflow.
+A merge touching both runs both. Each destination is its own job — its own pass or fail, its
+own log, and its own **Re-run failed jobs** button — so a Sigma outage never hides or blocks
+the Power BI publish.
+
+<details>
+<summary>One workflow for many workspaces</summary>
+
+`paths:` is a workflow-level filter, so it cannot vary per matrix entry. If you would rather
+have a single workflow covering every workspace, you have to work out which ones changed
+yourself and gate the jobs on it — for example with
+[`dorny/paths-filter`](https://github.com/dorny/paths-filter), or a `gh api` call over the
+pull request's files. The action itself does no change detection; it publishes what you tell
+it to.
+
+Prefer the per-workspace files unless you have a reason not to: they need no extra
+dependency, no token, and no API call.
+
+</details>
 
 ### Pinning a version
 
@@ -146,20 +145,18 @@ commit SHA instead:
 4. **GitHub secrets** — store the key and secret as repository secrets
    (`HONEYDEW_API_KEY` and `HONEYDEW_API_SECRET` in the examples above).
 
-## How the workspace is detected
+## What gets published
 
-Honeydew names development git branches `<workspace>/<branch>` — for example, branch
-`q3-fixes` of workspace `sales` lives on the git branch `sales/q3-fixes`. The action reads
-the workspace from that name (`github.head_ref` on a pull request, otherwise the current
-ref), or from the explicit `workspace` input.
+The action publishes exactly what the step names: the `domain` of the `workspace`, on
+`branch`. Nothing is inferred from the git branch the workflow runs on, and the action never
+decides for itself whether to run — that is the workflow's `paths:` filter's job.
 
-Only the **workspace** is detected. The Honeydew branch to publish comes from the `branch`
-input and defaults to `prod`, because the common trigger is a merged pull request whose
-content lands on `prod`. Set `branch` explicitly to publish a development branch — for
-example, to a staging BI workspace before merging.
+`branch` defaults to `prod`, because the common trigger is a merged pull request whose
+content lands on `prod`. Set it explicitly to publish a development branch — for example, to
+a staging BI workspace before merging.
 
 Before publishing, the action reloads the workspace from git (`reset_workspace`) so the
-published model reflects the latest commit. The reload runs in the API key's own session and
+published model reflects the merged commit. The reload runs in the API key's own session and
 does not affect anyone editing the workspace in Honeydew Studio. Set `reload: 'false'` to
 skip it.
 
@@ -206,7 +203,7 @@ below take.
 | `api-secret` | yes | | Honeydew API key secret. |
 | `target` | yes | | `powerbi`, `sigma`, `tableau` or `thoughtspot`. |
 | `base-url` | no | `https://api.honeydew.cloud` | Honeydew API base URL. Only set this if your organization uses a custom hostname (see **Settings > API** in the Honeydew UI). |
-| `workspace` | no | auto-detected | Honeydew workspace to publish. |
+| `workspace` | yes | | Honeydew workspace to publish from. |
 | `branch` | no | `prod` | Honeydew branch to publish. |
 | `domain` | yes | | Domain to publish. |
 | `connector-name` | no | `default` | Name of the connector configured in Honeydew for the target tool. |
@@ -255,6 +252,7 @@ HONEYDEW_BASE_URL=http://localhost:5000 \
 HONEYDEW_TOKEN="<your token>" \
 HONEYDEW_TARGET=powerbi \
 HONEYDEW_WORKSPACE=sales \
+HONEYDEW_DOMAIN=sales_exec \
 HONEYDEW_BRANCH=prod \
 HONEYDEW_CONNECTOR_NAME=default \
 HONEYDEW_POWERBI_MODEL_NAME="Sales Exec" \

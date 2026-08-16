@@ -1,0 +1,151 @@
+# The shared half of the per-workspace pattern: one copy of the publish logic that
+# every per-workspace workflow calls. Put it in .github/workflows/ alongside them.
+#
+# It covers all four destinations. Each caller picks the ones it wants with the
+# "targets" input, and fills in only those destinations' inputs — everything else
+# stays empty and is ignored. Delete the destinations your organization does not
+# use if you would rather keep this file short.
+#
+# One job per destination, named after the combination, so the Actions UI shows
+# exactly what deployed and lets you re-run a single failed destination.
+---
+name: Honeydew publish (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      workspace:
+        description: 'Honeydew workspace to publish from.'
+        required: true
+        type: string
+      domain:
+        description: 'Domain to publish.'
+        required: true
+        type: string
+      targets:
+        description: >-
+          Destinations to publish to, as a JSON array — for example
+          '["powerbi", "sigma"]'. One job runs per entry.
+        required: true
+        type: string
+      branch:
+        description: 'Honeydew branch to publish. Defaults to prod.'
+        required: false
+        default: 'prod'
+        type: string
+      connector-name:
+        description: >-
+          Connector configured in Honeydew for the destination. A connector set
+          up through the Honeydew UI is named "default".
+        required: false
+        default: 'default'
+        type: string
+
+      # --- Power BI ---------------------------------------------------------
+      powerbi-model-name:
+        description: 'Semantic model to create or update.'
+        required: false
+        default: ''
+        type: string
+      powerbi-group-id:
+        description: 'Power BI workspace to publish into.'
+        required: false
+        default: ''
+        type: string
+
+      # --- Sigma ------------------------------------------------------------
+      sigma-connection-id:
+        description: 'Sigma connection to the data warehouse.'
+        required: false
+        default: ''
+        type: string
+      sigma-folder-id:
+        description: 'Sigma folder to publish into.'
+        required: false
+        default: ''
+        type: string
+      sigma-model-name:
+        description: "Data model name. Defaults to the domain's display name."
+        required: false
+        default: ''
+        type: string
+      sigma-existing-data-model-id:
+        description: >-
+          Set after the first run, from the id reported in the job summary.
+          Without it Sigma creates a new data model on every publish.
+        required: false
+        default: ''
+        type: string
+      sigma-tags:
+        description: 'Comma-separated version tags to apply.'
+        required: false
+        default: ''
+        type: string
+
+      # --- Tableau ----------------------------------------------------------
+      # Either tableau-existing-datasource-id, or both of the other two.
+      tableau-existing-datasource-id:
+        description: 'Data source to update. Omit to create a new one.'
+        required: false
+        default: ''
+        type: string
+      tableau-datasource-name:
+        description: 'Data source to create. Needs tableau-project-id.'
+        required: false
+        default: ''
+        type: string
+      tableau-project-id:
+        description: 'Tableau project to create the data source in.'
+        required: false
+        default: ''
+        type: string
+
+      # --- ThoughtSpot ------------------------------------------------------
+      thoughtspot-connection-name:
+        description: 'Honeydew connection in ThoughtSpot.'
+        required: false
+        default: ''
+        type: string
+      thoughtspot-table-name:
+        description: "Table name. Defaults to the domain's display name."
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: ${{ inputs.domain }} → ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One destination failing must not cancel the others.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.targets) }}
+    steps:
+      - uses: honeydew-ai/publish-action@v1
+        with:
+          api-key: ${{ secrets.HONEYDEW_API_KEY }}
+          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: ${{ inputs.workspace }}
+          domain: ${{ inputs.domain }}
+          branch: ${{ inputs.branch }}
+          target: ${{ matrix.target }}
+          connector-name: ${{ inputs.connector-name }}
+          # Inputs for the destinations not being published are empty, and the
+          # action ignores any that do not belong to "target" — which is what
+          # lets one step definition serve every destination.
+          powerbi-model-name: ${{ inputs.powerbi-model-name }}
+          powerbi-group-id: ${{ inputs.powerbi-group-id }}
+          sigma-connection-id: ${{ inputs.sigma-connection-id }}
+          sigma-folder-id: ${{ inputs.sigma-folder-id }}
+          sigma-model-name: ${{ inputs.sigma-model-name }}
+          sigma-existing-data-model-id: ${{ inputs.sigma-existing-data-model-id }}
+          sigma-tags: ${{ inputs.sigma-tags }}
+          tableau-existing-datasource-id: ${{ inputs.tableau-existing-datasource-id }}
+          tableau-datasource-name: ${{ inputs.tableau-datasource-name }}
+          tableau-project-id: ${{ inputs.tableau-project-id }}
+          thoughtspot-connection-name: ${{ inputs.thoughtspot-connection-name }}
+          thoughtspot-table-name: ${{ inputs.thoughtspot-table-name }}
