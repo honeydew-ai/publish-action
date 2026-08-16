@@ -1,7 +1,9 @@
 name: 'Honeydew Publish'
+# The GitHub Marketplace rejects a description of 125 characters or more, counting
+# the folded single-line form — keep this comfortably under that.
 description: >-
-  Publish a Honeydew semantic-layer workspace branch to a BI tool — Power BI,
-  Sigma, Tableau or ThoughtSpot — using the Honeydew GraphQL API.
+  Publish a Honeydew semantic-layer workspace branch to a BI tool: Power BI,
+  Sigma, Tableau or ThoughtSpot.
 author: 'Honeydew Data Inc.'
 branding:
   icon: 'upload-cloud'

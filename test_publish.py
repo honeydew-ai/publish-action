@@ -5,6 +5,7 @@ import email.message
 import io
 import json
 import os
+import re
 import typing
 import urllib.error
 from pathlib import Path
@@ -23,6 +24,21 @@ THOUGHTSPOT = publish.DESTINATIONS[3]
 def test_destination_keys_are_unique() -> None:
     keys = [destination.key for destination in publish.DESTINATIONS]
     assert keys == ["powerbi", "sigma", "tableau", "thoughtspot"]
+
+
+# The GitHub Marketplace rejects the listing outright at 125 characters or more.
+MARKETPLACE_DESCRIPTION_LIMIT = 125
+
+
+def test_action_description_fits_the_marketplace_limit() -> None:
+    """A description at the limit blocks publishing, and only fails in the UI."""
+    action = Path(__file__).with_name("action.yml").read_text(encoding="utf-8")
+    block = re.search(r"^description: >-\n((?:  .+\n)+)", action, re.MULTILINE)
+    assert block is not None, "action.yml has no folded top-level description"
+    # ">-" folds the continuation lines into one space-joined line, which is the
+    # form the Marketplace measures.
+    description = " ".join(line.strip() for line in block.group(1).splitlines())
+    assert len(description) < MARKETPLACE_DESCRIPTION_LIMIT
 
 
 @pytest.mark.parametrize(
