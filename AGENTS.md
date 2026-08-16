@@ -62,8 +62,13 @@ Argument combinations a single `required` flag cannot express go in an
 - **Skipping is success.** A workspace that did not change exits zero with
   `status: skipped`. Failing instead would turn every unrelated merge red.
 - **"Cannot tell" publishes.** `workspace_changed` returns `True` when detection
-  is impossible — no token, not a pull request. Silently doing nothing on a
-  manual run is the more damaging way to be wrong.
+  is impossible — no list, no token, not a pull request. Silently doing nothing
+  on a manual run is the more damaging way to be wrong. Note the parsed
+  `changed-workspaces` distinguishes `None` (absent) from an empty set (the pull
+  request changed nothing); collapsing those would break one case or the other.
+- **Detection must not scale with the matrix.** A supplied `changed-workspaces`
+  wins over `github-token` precisely so N publish jobs make one API call between
+  them, not N identical ones. Keep that precedence.
 
 ## Python Guidelines
 

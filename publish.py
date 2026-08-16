@@ -258,35 +258,90 @@ def _quoted_list(names: list[str]) -> str:
     return ", ".join(f"'{name}'" for name in names)
 
 
-def workspace_changed(
-    workspace: str,
-    *,
-    token: str,
-    repository: str,
-    event_path: str,
-) -> bool:
+def parse_changed_workspaces(raw: str) -> set[str] | None:
+    """Parse the ``changed-workspaces`` input, or ``None`` when it was not given.
+
+    Accepts a JSON array — which a detection job can emit once and reuse both here
+    and in a job-level ``if:`` — or a comma-separated list. An empty JSON array is
+    meaningful and distinct from an absent input: it says the pull request changed
+    no workspace at all, so every publish should skip.
+    """
+    if not (value := raw.strip()):
+        return None
+    if value.startswith("{"):
+        fail(
+            "'changed-workspaces' must be a JSON array or a comma-separated list "
+            f"of workspace names, not a JSON object: {value[:100]}",
+        )
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as error:
+            fail(f"Invalid 'changed-workspaces' JSON: {error}")
+        if not isinstance(parsed, list):
+            fail("'changed-workspaces' JSON must be an array of workspace names.")
+        return {str(item).strip() for item in parsed if str(item).strip()}
+    return {part.strip() for part in value.split(",") if part.strip()}
+
+
+@dataclasses.dataclass(frozen=True)
+class ChangeDetection:
+    """How this run learns which workspaces the merged pull request touched."""
+
+    declared: set[str] | None
+    token: str
+    repository: str
+    event_path: str
+
+    @classmethod
+    def from_env(cls) -> "ChangeDetection":
+        return cls(
+            declared=parse_changed_workspaces(
+                os.environ.get("HONEYDEW_CHANGED_WORKSPACES", ""),
+            ),
+            token=os.environ.get("HONEYDEW_GITHUB_TOKEN", "").strip(),
+            repository=os.environ.get("GITHUB_REPOSITORY", "").strip(),
+            event_path=os.environ.get("GITHUB_EVENT_PATH", ""),
+        )
+
+
+def workspace_changed(workspace: str, detection: ChangeDetection) -> bool:
     """Whether the merged pull request touched anything under ``workspace/``.
 
-    Returns ``True`` when it cannot tell — no token, or not a pull request event.
-    Publishing on "cannot tell" is deliberate: skipping instead would silently do
-    nothing on a manual run, which is the more damaging way to be wrong.
+    A supplied ``changed-workspaces`` wins over calling the API, so a matrix can
+    compute the list once in an upfront job instead of once per job.
+
+    Returns ``True`` when it cannot tell — no list and no token, or not a pull
+    request event. Publishing on "cannot tell" is deliberate: skipping instead
+    would silently do nothing on a manual run, which is the more damaging way to
+    be wrong.
     """
-    if not token:
+    if detection.declared is not None:
         print(
-            "No 'github-token' supplied: publishing without checking whether the "
-            "workspace changed.",
+            "Changed workspaces supplied: "
+            f"{', '.join(sorted(detection.declared)) or 'none'}",
+        )
+        return workspace in detection.declared
+    if not detection.token:
+        print(
+            "Neither 'changed-workspaces' nor 'github-token' supplied: publishing "
+            "without checking whether the workspace changed.",
         )
         return True
-    if (number := _pull_request_number(event_path)) is None:
+    if (number := _pull_request_number(detection.event_path)) is None:
         print(
             "Not a pull request event: publishing without checking whether the "
             "workspace changed.",
         )
         return True
-    if not repository:
+    if not detection.repository:
         print("GITHUB_REPOSITORY is unset: cannot check whether the workspace changed.")
         return True
-    paths = _fetch_changed_paths(token=token, repository=repository, number=number)
+    paths = _fetch_changed_paths(
+        token=detection.token,
+        repository=detection.repository,
+        number=number,
+    )
     changed = {path.split("/")[0] for path in paths if "/" in path}
     print(
         f"Pull request #{number} changed {len(paths)} file(s) across "
@@ -697,12 +752,7 @@ def main() -> None:
         domain=str(values.get("domain") or ""),
     )
 
-    if not workspace_changed(
-        workspace,
-        token=os.environ.get("HONEYDEW_GITHUB_TOKEN", "").strip(),
-        repository=os.environ.get("GITHUB_REPOSITORY", "").strip(),
-        event_path=os.environ.get("GITHUB_EVENT_PATH", ""),
-    ):
+    if not workspace_changed(workspace, ChangeDetection.from_env()):
         _skip(target)
         return
 

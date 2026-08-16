@@ -28,11 +28,20 @@ inputs:
     description: >-
       Where to publish: "powerbi", "sigma", "tableau" or "thoughtspot".
     required: true
+  changed-workspaces:
+    description: >-
+      Workspaces the merged pull request changed, as a JSON array or a
+      comma-separated list. Supply this — computed once by an earlier job — so a
+      job matrix does not call the GitHub API once per job. Takes precedence
+      over "github-token". An empty JSON array means nothing changed, so every
+      publish skips.
+    required: false
   github-token:
     description: >-
       Token used to read which files the merged pull request changed, so the
       publish runs only when "workspace" changed. Pass "${{ github.token }}"
-      and grant "pull-requests: read". When omitted, the publish always runs.
+      and grant "pull-requests: read". Only used when "changed-workspaces" is
+      not supplied; when neither is, the publish always runs.
     required: false
   branch:
     description: >-
@@ -166,6 +175,7 @@ runs:
         HONEYDEW_WORKSPACE: ${{ inputs.workspace }}
         HONEYDEW_DOMAIN: ${{ inputs.domain }}
         HONEYDEW_TARGET: ${{ inputs.target }}
+        HONEYDEW_CHANGED_WORKSPACES: ${{ inputs.changed-workspaces }}
         HONEYDEW_GITHUB_TOKEN: ${{ inputs.github-token }}
         HONEYDEW_BRANCH: ${{ inputs.branch }}
         HONEYDEW_CONNECTOR_NAME: ${{ inputs.connector-name }}

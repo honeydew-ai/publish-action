@@ -30,14 +30,34 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read   # lets the action see whether the workspace changed
+  pull-requests: read   # lets the detection job read the changed files
 
 jobs:
-  publish:
+  # One API call for the whole run, instead of one per publish job.
+  changes:
     if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      workspaces: ${{ steps.detect.outputs.workspaces }}
+    steps:
+      - id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Top-level directory of every file the merged PR touched, as JSON.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[].filename' \
+            | awk -F/ 'NF > 1 {print $1}' | sort -u | jq -R . | jq -sc . \
+            | sed 's/^/workspaces=/' >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: changes
     runs-on: ubuntu-latest
     # One job per combination, named so the Actions UI shows what deployed.
     name: ${{ matrix.workspace }}/${{ matrix.domain }} → ${{ matrix.target }}
+    # Jobs whose workspace did not change never start.
+    if: contains(fromJSON(needs.changes.outputs.workspaces), matrix.workspace)
     strategy:
       fail-fast: false        # one destination failing must not cancel the others
       matrix:
@@ -63,7 +83,6 @@ jobs:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
-          github-token: ${{ github.token }}
           workspace: ${{ matrix.workspace }}
           domain: ${{ matrix.domain }}
           target: ${{ matrix.target }}
@@ -77,8 +96,8 @@ jobs:
 Inputs belonging to a different `target` are ignored, so one step definition serves the whole
 matrix. A matrix entry that omits a key leaves it empty, which is the same as not setting it.
 
-On a merge touching only `finance/`, the two `sales` jobs report **skipped** and pass, and the
-`finance` job publishes. Each job's summary says which it was.
+On a merge touching only `finance/`, the two `sales` jobs are **skipped by GitHub** — they
+never start, so they cost nothing — and the `finance` job publishes.
 
 <details>
 <summary>Separate steps instead of a matrix</summary>
@@ -131,19 +150,61 @@ commit SHA instead:
 
 ## Publishing only what changed
 
-Pass `github-token: ${{ github.token }}` and grant `pull-requests: read`. The action reads
-the merged pull request's changed files and publishes only if a file under the `workspace/`
-directory changed.
+A publish should run only when its workspace actually changed. There are three ways to
+arrange that, and with a job matrix the first is the one you want.
+
+### 1. Gate the jobs (recommended)
+
+Compute the changed workspaces **once** in an upfront job, as in the example above, and gate
+each publish job with `if:`. Jobs whose workspace did not change never start, so they consume
+no runner minutes and GitHub shows them as skipped. The action needs no token at all.
+
+```yaml
+    if: contains(fromJSON(needs.changes.outputs.workspaces), matrix.workspace)
+```
+
+`fromJSON` turns the output into a real array, so `contains` matches whole elements —
+`sales` is not satisfied by `sales_eu` changing. Comparing against a bare comma-separated
+string would match on substrings.
+
+### 2. Pass the list to the action
+
+Same single upfront job, but let each job start and have the action decide:
+
+```yaml
+          changed-workspaces: ${{ needs.changes.outputs.workspaces }}
+```
+
+Also one API call for the whole run. The job runs, reports `status: skipped` and passes, and
+its summary records that it was skipped — useful when you want a per-combination record of
+every run, including the no-ops. Accepts a JSON array or a comma-separated list.
+
+### 3. Let the action look it up
+
+```yaml
+          github-token: ${{ github.token }}
+```
+
+Simplest to write, and fine for a single publish. **Avoid it with a matrix**: each job then
+calls the GitHub API separately to compute the same answer, so a 10-job matrix makes 10
+identical calls and needs the token in every job.
+
+### What each situation does
 
 | Situation | What happens |
 |---|---|
-| The `workspace` directory changed | Published |
-| It did not change | `status: skipped`, and the job **passes** |
-| No `github-token`, or not a pull request event | Published |
+| `changed-workspaces` lists the workspace | Published |
+| `changed-workspaces` given but does not list it (including `[]`) | `status: skipped`, job **passes** |
+| Only `github-token`, and the workspace changed | Published |
+| Only `github-token`, and it did not change | `status: skipped`, job **passes** |
+| Neither given, or not a pull request event | Published |
+
+`changed-workspaces` takes precedence over `github-token`, and an empty JSON array is
+meaningful — it says the pull request changed no workspace, so everything skips.
 
 That last row is deliberate: "cannot tell" publishes rather than skips, because silently
 doing nothing on a `workflow_dispatch` run is the more damaging way to be wrong. If you want
-the gate enforced, always pass the token.
+the gate enforced, always supply one of the two.
 
 Before publishing, the action reloads the workspace from git (`reset_workspace`) so the
 published model reflects the merged commit. The reload runs in the API key's own session and
@@ -185,7 +246,8 @@ List the IDs of objects that already exist with the
 | `workspace` | yes | | Honeydew workspace, and the directory whose changes gate this publish. |
 | `domain` | yes | | Domain to publish. |
 | `target` | yes | | `powerbi`, `sigma`, `tableau` or `thoughtspot`. |
-| `github-token` | no | | Token used to check whether the workspace changed. Omit to always publish. |
+| `changed-workspaces` | no | | Workspaces the merged PR changed (JSON array or comma-separated). Computed once by an earlier job; takes precedence over `github-token`. |
+| `github-token` | no | | Token used to look up the changed workspaces itself. Prefer `changed-workspaces` with a matrix. |
 | `branch` | no | `prod` | Honeydew branch to publish. |
 | `connector-name` | no | `default` | Connector configured in Honeydew for the target tool. |
 | `base-url` | no | `https://api.honeydew.cloud` | Honeydew API base URL. Set this only if your organization uses a custom hostname. |
@@ -244,7 +306,7 @@ python3 publish.py
 
 `HONEYDEW_TOKEN` takes precedence over `HONEYDEW_API_KEY` / `HONEYDEW_API_SECRET`. Every
 input maps to `HONEYDEW_` plus its upper-cased name with dashes as underscores. With no
-`HONEYDEW_GITHUB_TOKEN`, the publish always runs.
+`HONEYDEW_CHANGED_WORKSPACES` and no `HONEYDEW_GITHUB_TOKEN`, the publish always runs.
 
 ## Output
 

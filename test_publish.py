@@ -224,6 +224,84 @@ def _files_response(names: list[str]) -> mock.MagicMock:
     return response
 
 
+def _detection(
+    *,
+    declared: set[str] | None = None,
+    token: str = "",
+    repository: str = "org/repo",
+    event_path: str = "",
+) -> publish.ChangeDetection:
+    return publish.ChangeDetection(
+        declared=declared,
+        token=token,
+        repository=repository,
+        event_path=event_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("", None, id="absent"),
+        pytest.param("   ", None, id="whitespace_is_absent"),
+        pytest.param("[]", set(), id="empty_json_array_means_nothing_changed"),
+        pytest.param('["a", "b"]', {"a", "b"}, id="json_array"),
+        pytest.param('[" a ", "", "b"]', {"a", "b"}, id="json_array_is_cleaned"),
+        pytest.param("a,b", {"a", "b"}, id="comma_separated"),
+        pytest.param(" a , b ,,", {"a", "b"}, id="comma_separated_is_cleaned"),
+    ],
+)
+def test_parse_changed_workspaces(raw: str, expected: set[str] | None) -> None:
+    assert publish.parse_changed_workspaces(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("[not json", id="malformed_json"),
+        pytest.param('{"a": 1}', id="json_object_instead_of_array"),
+    ],
+)
+def test_parse_changed_workspaces_fails(raw: str) -> None:
+    with pytest.raises(SystemExit):
+        publish.parse_changed_workspaces(raw)
+
+
+@pytest.mark.parametrize(
+    ("workspace", "declared", "expected"),
+    [
+        pytest.param("tasty_bytes", {"tasty_bytes"}, True, id="listed"),
+        pytest.param("tasty_bytes", {"tpch_demo"}, False, id="not_listed"),
+        pytest.param("tasty_bytes", set(), False, id="empty_means_nothing_changed"),
+        pytest.param("sales", {"sales_eu"}, False, id="prefix_is_not_a_match"),
+    ],
+)
+def test_workspace_changed_uses_the_supplied_list(
+    workspace: str,
+    declared: set[str],
+    expected: bool,
+) -> None:
+    """Exact membership, so 'sales' is not satisfied by 'sales_eu' changing."""
+    with mock.patch("urllib.request.urlopen") as urlopen:
+        assert (
+            publish.workspace_changed(workspace, _detection(declared=declared))
+            is expected
+        )
+    urlopen.assert_not_called()
+
+
+def test_supplied_list_avoids_the_api_call(tmp_path: Path) -> None:
+    """The whole point: a matrix calls GitHub once upfront, not once per job."""
+    detection = _detection(
+        declared={"tasty_bytes"},
+        token="t",
+        event_path=_event(tmp_path, {"pull_request": {"number": 7}}),
+    )
+    with mock.patch("urllib.request.urlopen") as urlopen:
+        assert publish.workspace_changed("tasty_bytes", detection)
+    urlopen.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("workspace", "expected"),
     [
@@ -243,9 +321,7 @@ def test_workspace_changed(tmp_path: Path, workspace: str, expected: bool) -> No
         assert (
             publish.workspace_changed(
                 workspace,
-                token="t",
-                repository="org/repo",
-                event_path=event,
+                _detection(token="t", event_path=event),
             )
             is expected
         )
@@ -266,9 +342,7 @@ def test_workspace_changed_paginates(tmp_path: Path) -> None:
     ) as urlopen:
         assert publish.workspace_changed(
             "b",
-            token="t",
-            repository="org/repo",
-            event_path=event,
+            _detection(token="t", event_path=event),
         )
     assert urlopen.call_count == 2
 
@@ -289,9 +363,7 @@ def test_workspace_changed_publishes_when_undetectable(
     """Cannot tell means publish: skipping would silently do nothing on a manual run."""
     assert publish.workspace_changed(
         "anything",
-        token=token,
-        repository="org/repo",
-        event_path=_event(tmp_path, payload),
+        _detection(token=token, event_path=_event(tmp_path, payload)),
     )
 
 
