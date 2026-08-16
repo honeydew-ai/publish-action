@@ -360,30 +360,6 @@ def _destination_keys() -> str:
     return ", ".join(destination.key for destination in DESTINATIONS)
 
 
-def resolve_workspace(*, workspace_input: str, git_ref: str) -> str:
-    """Return the Honeydew workspace to publish.
-
-    Detection follows the Honeydew git branch convention: a development branch of
-    workspace "sales" named "q3-fixes" lives on the git branch "sales/q3-fixes".
-    Only the workspace is detected — the branch to publish comes from the "branch"
-    input and defaults to "prod", because the common trigger is a merged pull
-    request, whose content lands on prod.
-    """
-    if workspace_input:
-        return workspace_input
-    match git_ref.split("/"):
-        case [workspace, _]:
-            return workspace
-        case [workspace, middle, _] if middle == MAIN_BRANCH:
-            # Honeydew names system-managed branches "<workspace>/prod/<hash>".
-            return workspace
-    fail(
-        f"Cannot detect a Honeydew workspace from git branch '{git_ref}'. Honeydew "
-        "development branches are named '<workspace>/<branch>'. For other branches, "
-        "set the 'workspace' input explicitly.",
-    )
-
-
 def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
     """Read this destination's arguments from the environment, and validate them."""
     values: dict[str, ArgValue] = {}
@@ -579,11 +555,7 @@ def main() -> None:
         os.environ.get("HONEYDEW_BASE_URL", "").strip() or "https://api.honeydew.cloud"
     )
     destination = resolve_destination(os.environ.get("HONEYDEW_TARGET", "").strip())
-    workspace = resolve_workspace(
-        workspace_input=os.environ.get("HONEYDEW_WORKSPACE", "").strip(),
-        git_ref=os.environ.get("GITHUB_HEAD_REF")
-        or os.environ.get("GITHUB_REF_NAME", ""),
-    )
+    workspace = require_env("HONEYDEW_WORKSPACE")
     branch = os.environ.get("HONEYDEW_BRANCH", "").strip() or MAIN_BRANCH
     values = collect_arguments(destination)
     client = _build_client(base_url)

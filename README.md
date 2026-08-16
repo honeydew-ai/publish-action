@@ -34,13 +34,14 @@ jobs:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: sales
           target: powerbi
           domain: sales_exec
           powerbi-model-name: Sales Exec
           powerbi-group-id: ${{ vars.POWERBI_GROUP_ID }}
 ```
 
-The workspace is detected from the merged branch name, and the Honeydew branch defaults to
+`workspace` and `domain` say exactly what to publish. The Honeydew `branch` defaults to
 `prod` — the branch a merge produces.
 
 ### Publishing two domains to two destinations
@@ -71,6 +72,7 @@ jobs:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: sales
           target: powerbi
           domain: sales_exec
           powerbi-model-name: Sales Exec
@@ -81,6 +83,7 @@ jobs:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: sales
           target: tableau
           domain: sales_ops
           # Updates the existing data source. On the first run, swap this for
@@ -110,6 +113,7 @@ jobs:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: sales
           target: ${{ matrix.target }}
           domain: ${{ matrix.domain }}
           powerbi-model-name: Sales Exec
@@ -146,17 +150,16 @@ commit SHA instead:
 4. **GitHub secrets** — store the key and secret as repository secrets
    (`HONEYDEW_API_KEY` and `HONEYDEW_API_SECRET` in the examples above).
 
-## How the workspace is detected
+## What gets published
 
-Honeydew names development git branches `<workspace>/<branch>` — for example, branch
-`q3-fixes` of workspace `sales` lives on the git branch `sales/q3-fixes`. The action reads
-the workspace from that name (`github.head_ref` on a pull request, otherwise the current
-ref), or from the explicit `workspace` input.
+The action publishes exactly what you name: the `domain` of the `workspace`, on `branch`.
+Nothing is inferred from the git branch the workflow happens to run on, so a repository
+holding many workspaces publishes only the one you asked for, whatever branch triggered
+the run.
 
-Only the **workspace** is detected. The Honeydew branch to publish comes from the `branch`
-input and defaults to `prod`, because the common trigger is a merged pull request whose
-content lands on `prod`. Set `branch` explicitly to publish a development branch — for
-example, to a staging BI workspace before merging.
+`branch` defaults to `prod`, because the common trigger is a merged pull request whose
+content lands on `prod`. Set it explicitly to publish a development branch — for example,
+to a staging BI workspace before merging.
 
 Before publishing, the action reloads the workspace from git (`reset_workspace`) so the
 published model reflects the latest commit. The reload runs in the API key's own session and
@@ -183,6 +186,7 @@ summary (or the `id` output), and store it as a repository variable:
         with:
           api-key: ${{ secrets.HONEYDEW_API_KEY }}
           api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: sales
           target: sigma
           domain: sales_ops
           sigma-connection-id: ${{ vars.SIGMA_CONNECTION_ID }}
@@ -206,7 +210,7 @@ below take.
 | `api-secret` | yes | | Honeydew API key secret. |
 | `target` | yes | | `powerbi`, `sigma`, `tableau` or `thoughtspot`. |
 | `base-url` | no | `https://api.honeydew.cloud` | Honeydew API base URL. Only set this if your organization uses a custom hostname (see **Settings > API** in the Honeydew UI). |
-| `workspace` | no | auto-detected | Honeydew workspace to publish. |
+| `workspace` | yes | | Honeydew workspace to publish. |
 | `branch` | no | `prod` | Honeydew branch to publish. |
 | `domain` | yes | | Domain to publish. |
 | `connector-name` | no | `default` | Name of the connector configured in Honeydew for the target tool. |
@@ -256,6 +260,7 @@ HONEYDEW_TOKEN="<your token>" \
 HONEYDEW_TARGET=powerbi \
 HONEYDEW_WORKSPACE=sales \
 HONEYDEW_BRANCH=prod \
+HONEYDEW_DOMAIN=sales_exec \
 HONEYDEW_CONNECTOR_NAME=default \
 HONEYDEW_POWERBI_MODEL_NAME="Sales Exec" \
 HONEYDEW_POWERBI_GROUP_ID=<group id> \

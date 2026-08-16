@@ -27,11 +27,8 @@ inputs:
       Where to publish: "powerbi", "sigma", "tableau" or "thoughtspot".
     required: true
   workspace:
-    description: >-
-      Honeydew workspace name to publish. When omitted, it is detected from the
-      git branch name (Honeydew development branches are named
-      "<workspace>/<branch>").
-    required: false
+    description: 'Honeydew workspace name to publish.'
+    required: true
   branch:
     description: >-
       Honeydew branch to publish. Defaults to "prod", which is what a merged
