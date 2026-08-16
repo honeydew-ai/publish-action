@@ -24,13 +24,16 @@ the mutation to call, its arguments, and the result fields to read back. The res
 of the file is destination-agnostic, so a new destination needs no new branching.
 
 1. Add the `Destination` entry, mapping each mutation argument to an `Argument`
-   with its action input name.
-2. Add those inputs to `action.yml`, prefixed with the destination key
-   (`<destination>-<argument>`), and pass them through in the `env:` block.
+   with its action input name, prefixed with the destination key
+   (`<destination>-<argument>`).
+2. Add those inputs to `action.yml` and pass them through in the `env:` block.
 3. Add a row to the README's per-destination input table and to the
    "Updating versus duplicating" table.
 4. Add parametrized cases to the `collect_arguments`, `build_mutation` and
    `publish` tests.
+
+Inputs belonging to other destinations are ignored at runtime, which is what
+lets one step definition serve a whole job matrix.
 
 Keep destination-specific logic in the descriptor, not in `if target == ...`
 branches. `Argument` carries the API-side name separately from the input name, so
@@ -52,6 +55,15 @@ Argument combinations a single `required` flag cannot express go in an
   create; a retry after a timeout can publish the same model twice. `publish()`
   passes `retries=0`, and only idempotent calls (`reset_workspace`, queries) use
   the default retries.
+- **One run publishes one target.** Callers fan out over a job matrix, so each
+  combination gets its own pass, fail, log and re-run. Never batch several
+  publishes into one run — it collapses that back into a single red dot and
+  makes partial re-runs impossible.
+- **Skipping is success.** A workspace that did not change exits zero with
+  `status: skipped`. Failing instead would turn every unrelated merge red.
+- **"Cannot tell" publishes.** `workspace_changed` returns `True` when detection
+  is impossible — no token, not a pull request. Silently doing nothing on a
+  manual run is the more damaging way to be wrong.
 
 ## Python Guidelines
 

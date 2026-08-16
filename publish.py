@@ -1,11 +1,16 @@
 # Copyright 2026 Honeydew Data Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Publish a Honeydew workspace branch to a BI tool via the Honeydew GraphQL API.
+"""Publish a Honeydew domain to a BI tool via the Honeydew GraphQL API.
 
 Entry point of the honeydew-ai/publish-action GitHub Action.
 Uses only the Python standard library, so it runs on any GitHub runner
 without installing dependencies.
+
+One run publishes one (workspace, domain, BI tool) target, so a caller fans out
+over a job matrix and gets a separate pass, fail and re-run per combination.
+The target is published only when its workspace changed in the merged pull
+request; otherwise the run reports "skipped" and succeeds.
 
 Every destination is one entry in DESTINATIONS: the mutation to call, the
 arguments it takes, and the result fields to read back. The rest of this file
@@ -41,6 +46,11 @@ BACKOFF_MAX_SECONDS = 30.0
 # A server-supplied Retry-After wins over the backoff, but is not trusted unbounded.
 MAX_RETRY_AFTER_SECONDS = 60.0
 
+GITHUB_API_ROOT = "https://api.github.com"
+CHANGED_FILES_PER_PAGE = 100
+# GitHub caps the pull request files listing at 3000 entries.
+CHANGED_FILES_MAX_PAGES = 30
+
 WORKFLOW_COMMAND_ESCAPES = str.maketrans({"%": "%25", "\r": "%0D", "\n": "%0A"})
 
 
@@ -52,6 +62,10 @@ class ArgKind(enum.StrEnum):
 
 
 ArgValue = str | list[str]
+
+
+class ApiError(Exception):
+    """The Honeydew API rejected a call or could not be reached."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,12 +84,12 @@ class Argument:
 
 @dataclasses.dataclass(frozen=True)
 class Destination:
-    """A place a workspace branch can be published to, and how to address it.
+    """A place a domain can be published to, and how to address it.
 
     ``url_field``, ``id_field`` and ``warning_fields`` map the destination's own
-    response type onto the action's three outputs. A warning field holds the
-    error of a step that runs *after* the publish succeeded (refreshing a Power BI
-    model, tagging a Sigma version), so it never means the publish itself failed.
+    response type onto the action's outputs. A warning field holds the error of a
+    step that runs *after* the publish succeeded (refreshing a Power BI model,
+    tagging a Sigma version), so it never means the publish itself failed.
     """
 
     key: str
@@ -180,6 +194,10 @@ def print_warning(message: str) -> None:
     print(f"::warning::{escape_workflow_command(message)}")
 
 
+def print_notice(message: str) -> None:
+    print(f"::notice::{escape_workflow_command(message)}")
+
+
 def escape_workflow_command(message: str) -> str:
     """Percent-encode the characters that terminate or forge a workflow command.
 
@@ -196,6 +214,139 @@ def escape_workflow_command(message: str) -> str:
 def fail(message: str) -> typing.NoReturn:
     print_error(message)
     sys.exit(1)
+
+
+def resolve_destination(target: str) -> Destination:
+    if not target:
+        fail(f"Missing required input: target. Expected one of: {_destination_keys()}.")
+    for destination in DESTINATIONS:
+        if destination.key == target:
+            return destination
+    fail(f"Unknown target '{target}'. Expected one of: {_destination_keys()}.")
+
+
+def _destination_keys() -> str:
+    return ", ".join(destination.key for destination in DESTINATIONS)
+
+
+def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
+    """Read this destination's mutation arguments from the environment."""
+    values: dict[str, ArgValue] = {}
+    missing: list[str] = []
+    for argument in destination.arguments:
+        raw = os.environ.get(argument.env_name, "").strip()
+        if not raw:
+            if argument.required:
+                missing.append(argument.input_name)
+            continue
+        if argument.kind is ArgKind.STRING_LIST:
+            if items := [part.strip() for part in raw.split(",") if part.strip()]:
+                values[argument.api_name] = items
+        else:
+            values[argument.api_name] = raw
+    if missing:
+        fail(
+            f"Publishing to {destination.label} requires the "
+            f"{_quoted_list(missing)} input(s).",
+        )
+    if destination.extra_check and (error := destination.extra_check(values)):
+        fail(error)
+    return values
+
+
+def _quoted_list(names: list[str]) -> str:
+    return ", ".join(f"'{name}'" for name in names)
+
+
+def workspace_changed(
+    workspace: str,
+    *,
+    token: str,
+    repository: str,
+    event_path: str,
+) -> bool:
+    """Whether the merged pull request touched anything under ``workspace/``.
+
+    Returns ``True`` when it cannot tell — no token, or not a pull request event.
+    Publishing on "cannot tell" is deliberate: skipping instead would silently do
+    nothing on a manual run, which is the more damaging way to be wrong.
+    """
+    if not token:
+        print(
+            "No 'github-token' supplied: publishing without checking whether the "
+            "workspace changed.",
+        )
+        return True
+    if (number := _pull_request_number(event_path)) is None:
+        print(
+            "Not a pull request event: publishing without checking whether the "
+            "workspace changed.",
+        )
+        return True
+    if not repository:
+        print("GITHUB_REPOSITORY is unset: cannot check whether the workspace changed.")
+        return True
+    paths = _fetch_changed_paths(token=token, repository=repository, number=number)
+    changed = {path.split("/")[0] for path in paths if "/" in path}
+    print(
+        f"Pull request #{number} changed {len(paths)} file(s) across "
+        f"{len(changed)} workspace(s): {', '.join(sorted(changed)) or 'none'}",
+    )
+    return workspace in changed
+
+
+def _pull_request_number(event_path: str) -> int | None:
+    if not event_path or not Path(event_path).exists():
+        return None
+    with Path(event_path).open(encoding="utf-8") as event_file:
+        event = json.load(event_file)
+    number = (event.get("pull_request") or {}).get("number")
+    return int(number) if isinstance(number, int) else None
+
+
+def _fetch_changed_paths(*, token: str, repository: str, number: int) -> set[str]:
+    paths: set[str] = set()
+    for page in range(1, CHANGED_FILES_MAX_PAGES + 1):
+        url = (
+            f"{GITHUB_API_ROOT}/repos/{repository}/pulls/{number}/files"
+            f"?per_page={CHANGED_FILES_PER_PAGE}&page={page}"
+        )
+        batch = _github_get(url, token)
+        paths.update(str(entry["filename"]) for entry in batch)
+        if len(batch) < CHANGED_FILES_PER_PAGE:
+            return paths
+    print_warning(
+        f"Pull request #{number} lists more files than this action reads "
+        f"({CHANGED_FILES_MAX_PAGES * CHANGED_FILES_PER_PAGE}); a changed workspace "
+        "may be missed and its publish skipped.",
+    )
+    return paths
+
+
+def _github_get(url: str, token: str) -> list[dict[str, typing.Any]]:
+    request = urllib.request.Request(  # noqa: S310  # suspicious-url-open-usage
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310  # suspicious-url-open-usage
+            request,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ) as response:
+            body = json.loads(response.read())
+            return typing.cast("list[dict[str, typing.Any]]", body)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:300]
+        fail(
+            f"Cannot read the pull request's changed files (HTTP {error.code}): "
+            f"{detail}. The token needs 'pull-requests: read' permission.",
+        )
+    except (TimeoutError, urllib.error.URLError, json.JSONDecodeError) as error:
+        fail(f"Cannot read the pull request's changed files: {error}")
 
 
 class HoneydewClient:
@@ -234,7 +385,7 @@ class HoneydewClient:
         branch: str | None = None,
         retries: int = RETRIES,
     ) -> dict[str, typing.Any]:
-        """Run a GraphQL document, exiting the action on any error.
+        """Run a GraphQL document, raising ApiError on anything the API rejects.
 
         ``retries`` defaults to retrying transient failures, which is safe only for
         idempotent operations. Publishing passes 0 — see ``publish``.
@@ -247,9 +398,9 @@ class HoneydewClient:
             retries=retries,
         )
         if errors := payload.get("errors"):
-            fail(f"Honeydew API returned errors: {_error_messages(errors)}")
+            raise ApiError(_error_messages(errors))
         if (data := payload.get("data")) is None:
-            fail(f"Honeydew API response has no data: {json.dumps(payload)[:500]}")
+            raise ApiError(f"response has no data: {json.dumps(payload)[:500]}")
         return typing.cast("dict[str, typing.Any]", data)
 
     def _request(
@@ -300,20 +451,19 @@ class HoneydewClient:
                         "api-key and api-secret inputs, and make sure the public "
                         "GraphQL API is enabled for your organization.",
                     )
-                fail(f"Honeydew API request failed with HTTP {error.code}: {detail}")
+                raise ApiError(f"HTTP {error.code}: {detail}") from error
             except (TimeoutError, urllib.error.URLError) as error:
                 if attempt < retries:
                     time.sleep(retry_delay(attempt, None))
                     continue
                 reason = getattr(error, "reason", error)
-                fail(f"Cannot reach the Honeydew API at {self._endpoint}: {reason}")
+                raise ApiError(f"cannot reach {self._endpoint}: {reason}") from error
             try:
                 return typing.cast("dict[str, typing.Any]", json.loads(raw))
-            except json.JSONDecodeError:
-                fail(
-                    "Honeydew API returned a non-JSON response from "
-                    f"{self._endpoint}: {raw.decode(errors='replace')[:500]}",
-                )
+            except json.JSONDecodeError as error:
+                raise ApiError(
+                    f"non-JSON response: {raw.decode(errors='replace')[:500]}",
+                ) from error
         raise AssertionError
 
 
@@ -345,72 +495,6 @@ def _parse_retry_after(retry_after: str | None) -> float | None:
 
 def _error_messages(errors: list[dict[str, typing.Any]]) -> str:
     return "; ".join(error.get("message", json.dumps(error)) for error in errors)
-
-
-def resolve_destination(target: str) -> Destination:
-    if not target:
-        fail(f"Missing required input: target. Expected one of: {_destination_keys()}.")
-    for destination in DESTINATIONS:
-        if destination.key == target:
-            return destination
-    fail(f"Unknown target '{target}'. Expected one of: {_destination_keys()}.")
-
-
-def _destination_keys() -> str:
-    return ", ".join(destination.key for destination in DESTINATIONS)
-
-
-def resolve_workspace(*, workspace_input: str, git_ref: str) -> str:
-    """Return the Honeydew workspace to publish.
-
-    Detection follows the Honeydew git branch convention: a development branch of
-    workspace "sales" named "q3-fixes" lives on the git branch "sales/q3-fixes".
-    Only the workspace is detected — the branch to publish comes from the "branch"
-    input and defaults to "prod", because the common trigger is a merged pull
-    request, whose content lands on prod.
-    """
-    if workspace_input:
-        return workspace_input
-    match git_ref.split("/"):
-        case [workspace, _]:
-            return workspace
-        case [workspace, middle, _] if middle == MAIN_BRANCH:
-            # Honeydew names system-managed branches "<workspace>/prod/<hash>".
-            return workspace
-    fail(
-        f"Cannot detect a Honeydew workspace from git branch '{git_ref}'. Honeydew "
-        "development branches are named '<workspace>/<branch>'. For other branches, "
-        "set the 'workspace' input explicitly.",
-    )
-
-
-def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
-    """Read this destination's arguments from the environment, and validate them."""
-    values: dict[str, ArgValue] = {}
-    missing: list[str] = []
-    for argument in destination.arguments:
-        raw = os.environ.get(argument.env_name, "").strip()
-        if not raw:
-            if argument.required:
-                missing.append(argument.input_name)
-            continue
-        if argument.kind is ArgKind.STRING_LIST:
-            if items := [part.strip() for part in raw.split(",") if part.strip()]:
-                values[argument.api_name] = items
-        else:
-            values[argument.api_name] = raw
-    if missing:
-        fail(
-            f"Publishing to {destination.label} requires the "
-            f"{_quoted_list(missing)} input(s).",
-        )
-    if destination.extra_check and (error := destination.extra_check(values)):
-        fail(error)
-    return values
-
-
-def _quoted_list(names: list[str]) -> str:
-    return ", ".join(f"'{name}'" for name in names)
 
 
 def build_mutation(destination: Destination, values: dict[str, ArgValue]) -> str:
@@ -445,6 +529,25 @@ def _result_fields(destination: Destination) -> list[str]:
     return fields
 
 
+class Status(enum.StrEnum):
+    PUBLISHED = "published"
+    SKIPPED = "skipped"
+
+
+@dataclasses.dataclass(frozen=True)
+class Target:
+    """The one (workspace, domain, BI tool) combination this run publishes."""
+
+    destination: Destination
+    workspace: str
+    branch: str
+    domain: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.workspace}/{self.domain} \u2192 {self.destination.label}"
+
+
 @dataclasses.dataclass(frozen=True)
 class PublishResult:
     url: str
@@ -454,24 +557,19 @@ class PublishResult:
 
 def publish(
     client: HoneydewClient,
-    destination: Destination,
-    *,
-    workspace: str,
-    branch: str,
+    target: Target,
     values: dict[str, ArgValue],
 ) -> PublishResult:
+    destination = target.destination
     mutation = build_mutation(destination, values)
-    print(
-        f"Publishing workspace '{workspace}' branch '{branch}' to "
-        f"{destination.label}...",
-    )
+    print(f"Publishing {target.label} (branch '{target.branch}')...")
     # No retries: creating a data source is not idempotent, so a retry after a
     # timeout could publish the same model twice.
     data = client.gql(
         mutation,
         variables=values,
-        workspace=workspace,
-        branch=branch,
+        workspace=target.workspace,
+        branch=target.branch,
         retries=0,
     )
     if (result := data.get(destination.mutation)) is None:
@@ -479,73 +577,77 @@ def publish(
             f"Publishing to {destination.label} returned no result. The destination "
             "may have rejected the request — check the Honeydew connector settings.",
         )
-    warnings = tuple(
-        f"{field}: {result[field]}"
-        for field in destination.warning_fields
-        if result.get(field)
-    )
     return PublishResult(
         url=str(result.get(destination.url_field) or ""),
         object_id=(
             str(result.get(destination.id_field) or "") if destination.id_field else ""
         ),
-        warnings=warnings,
+        warnings=tuple(
+            f"{field}: {result[field]}"
+            for field in destination.warning_fields
+            if result.get(field)
+        ),
     )
 
 
-def reload_workspace(
-    client: HoneydewClient,
-    *,
-    workspace: str,
-    branch: str,
-) -> None:
+def reload_workspace(client: HoneydewClient, *, workspace: str, branch: str) -> None:
     print(f"Reloading workspace '{workspace}' branch '{branch}' from git...")
     client.gql("mutation { reset_workspace }", workspace=workspace, branch=branch)
 
 
-def write_outputs(result: PublishResult) -> None:
+def write_outputs(status: Status, result: PublishResult | None) -> None:
     if not (output_path := os.environ.get("GITHUB_OUTPUT")):
         return
     # Newlines would be read as further output lines; the API-provided warning text
     # is the only value here that can contain them.
+    warning = " ".join(result.warnings) if result else ""
     values = {
-        "url": result.url,
-        "id": result.object_id,
-        "warning": " ".join(result.warnings).replace("\n", " ").replace("\r", " "),
+        "status": str(status),
+        "url": result.url if result else "",
+        "id": result.object_id if result else "",
+        "warning": warning.replace("\n", " ").replace("\r", " "),
     }
     with Path(output_path).open("a", encoding="utf-8") as output:
         output.writelines(f"{name}={value}\n" for name, value in values.items())
 
 
 def write_step_summary(
-    destination: Destination,
-    result: PublishResult,
-    *,
-    workspace: str,
-    branch: str,
-    domain: str,
+    target: Target,
+    status: Status,
+    result: PublishResult | None,
 ) -> None:
     if not (summary_path := os.environ.get("GITHUB_STEP_SUMMARY")):
         return
-    outcome = "⚠️ published with warnings" if result.warnings else "✅ published"
+    destination = target.destination
+    if status is Status.SKIPPED:
+        outcome = "⏭️ skipped — workspace unchanged"
+    elif result and result.warnings:
+        outcome = "⚠️ published with warnings"
+    else:
+        outcome = "✅ published"
+    row = (
+        f"| {target.workspace} | {target.branch} | {target.domain} "
+        f"| {destination.label} | {outcome} |"
+    )
     lines = [
         "## Honeydew publish",
         "",
-        "| Destination | Workspace | Branch | Domain | Result |",
+        "| Workspace | Branch | Domain | Destination | Result |",
         "|---|---|---|---|---|",
-        f"| {destination.label} | {workspace} | {branch} | {domain} | {outcome} |",
+        row,
         "",
     ]
-    if result.url:
+    if result and result.url:
         lines.append(f"[Open in {destination.label}]({result.url})")
-    if result.object_id and destination.id_field:
+    if result and result.object_id and destination.id_field:
         reuse_hint = (
             f"`{destination.id_field}`: `{result.object_id}` — pass this back as the "
             "update id on the next run so it updates this object instead of creating "
             "another one."
         )
         lines.extend(["", reuse_hint])
-    lines.extend(f"- ⚠️ {warning}" for warning in result.warnings)
+    if result:
+        lines.extend(f"- ⚠️ {warning}" for warning in result.warnings)
     with Path(summary_path).open("a", encoding="utf-8") as summary:
         summary.write("\n".join(lines) + "\n")
 
@@ -574,38 +676,46 @@ def _build_client(base_url: str) -> HoneydewClient:
     )
 
 
+def _skip(target: Target) -> None:
+    print_notice(f"Skipped {target.label}: workspace unchanged in this pull request.")
+    write_outputs(Status.SKIPPED, None)
+    write_step_summary(target, Status.SKIPPED, None)
+
+
 def main() -> None:
     base_url = (
         os.environ.get("HONEYDEW_BASE_URL", "").strip() or "https://api.honeydew.cloud"
     )
     destination = resolve_destination(os.environ.get("HONEYDEW_TARGET", "").strip())
-    workspace = resolve_workspace(
-        workspace_input=os.environ.get("HONEYDEW_WORKSPACE", "").strip(),
-        git_ref=os.environ.get("GITHUB_HEAD_REF")
-        or os.environ.get("GITHUB_REF_NAME", ""),
-    )
+    workspace = require_env("HONEYDEW_WORKSPACE")
     branch = os.environ.get("HONEYDEW_BRANCH", "").strip() or MAIN_BRANCH
     values = collect_arguments(destination)
-    client = _build_client(base_url)
-
-    if is_enabled("HONEYDEW_RELOAD", default=True):
-        reload_workspace(client, workspace=workspace, branch=branch)
-    result = publish(
-        client,
-        destination,
-        workspace=workspace,
-        branch=branch,
-        values=values,
-    )
-
-    write_outputs(result)
-    write_step_summary(
-        destination,
-        result,
+    target = Target(
+        destination=destination,
         workspace=workspace,
         branch=branch,
         domain=str(values.get("domain") or ""),
     )
+
+    if not workspace_changed(
+        workspace,
+        token=os.environ.get("HONEYDEW_GITHUB_TOKEN", "").strip(),
+        repository=os.environ.get("GITHUB_REPOSITORY", "").strip(),
+        event_path=os.environ.get("GITHUB_EVENT_PATH", ""),
+    ):
+        _skip(target)
+        return
+
+    client = _build_client(base_url)
+    try:
+        if is_enabled("HONEYDEW_RELOAD", default=True):
+            reload_workspace(client, workspace=workspace, branch=branch)
+        result = publish(client, target, values)
+    except ApiError as error:
+        fail(f"Publishing to {destination.label} failed: {error}")
+
+    write_outputs(Status.PUBLISHED, result)
+    write_step_summary(target, Status.PUBLISHED, result)
     for warning in result.warnings:
         print_warning(f"[{destination.label}] {warning}")
     print(f"Published to {destination.label}: {result.url or '(no link returned)'}")

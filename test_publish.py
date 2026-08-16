@@ -41,6 +41,9 @@ def test_action_description_fits_the_marketplace_limit() -> None:
     assert len(description) < MARKETPLACE_DESCRIPTION_LIMIT
 
 
+# --- resolving the destination and its arguments ------------------------------
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
@@ -67,39 +70,6 @@ def test_resolve_destination_fails(target: str) -> None:
         publish.resolve_destination(target)
 
 
-@pytest.mark.parametrize(
-    ("workspace_input", "git_ref", "expected"),
-    [
-        pytest.param("sales", "anything", "sales", id="explicit_input_wins"),
-        pytest.param("", "sales/q3-fixes", "sales", id="pull_request_head_ref"),
-        pytest.param("", "sales/prod/a36d4900", "sales", id="system_managed_branch"),
-    ],
-)
-def test_resolve_workspace(
-    workspace_input: str,
-    git_ref: str,
-    expected: str,
-) -> None:
-    assert (
-        publish.resolve_workspace(workspace_input=workspace_input, git_ref=git_ref)
-        == expected
-    )
-
-
-@pytest.mark.parametrize(
-    "git_ref",
-    [
-        pytest.param("main", id="default_branch"),
-        pytest.param("some-feature", id="flat_branch"),
-        pytest.param("sales/dev/abc123", id="three_segments_non_prod_middle"),
-        pytest.param("", id="no_ref"),
-    ],
-)
-def test_resolve_workspace_fails(git_ref: str) -> None:
-    with pytest.raises(SystemExit):
-        publish.resolve_workspace(workspace_input="", git_ref=git_ref)
-
-
 def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.Any]:
     with mock.patch.dict(os.environ, env, clear=True):
         return publish.collect_arguments(destination)
@@ -112,15 +82,15 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             POWERBI,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_DOMAIN": "  sales  ",
-                "HONEYDEW_POWERBI_MODEL_NAME": "Sales Exec",
-                "HONEYDEW_POWERBI_GROUP_ID": "3f2a",
+                "HONEYDEW_DOMAIN": "  analytics  ",
+                "HONEYDEW_POWERBI_MODEL_NAME": "Tasty Bytes Analytics",
+                "HONEYDEW_POWERBI_GROUP_ID": "g-1",
             },
             {
                 "connector_name": "default",
-                "domain": "sales",
-                "model_name": "Sales Exec",
-                "group_id": "3f2a",
+                "domain": "analytics",
+                "model_name": "Tasty Bytes Analytics",
+                "group_id": "g-1",
             },
             id="values_are_stripped",
         ),
@@ -128,63 +98,51 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             SIGMA,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_DOMAIN": "sales",
-                "HONEYDEW_SIGMA_CONNECTION_ID": "abc",
-                "HONEYDEW_SIGMA_FOLDER_ID": "def",
+                "HONEYDEW_DOMAIN": "analytics",
+                "HONEYDEW_SIGMA_CONNECTION_ID": "c-1",
+                "HONEYDEW_SIGMA_FOLDER_ID": "f-1",
                 "HONEYDEW_SIGMA_TAGS": "v1, prod ,,",
             },
             {
                 "connector_name": "default",
-                "domain": "sales",
-                "connection_id": "abc",
-                "folder_id": "def",
+                "domain": "analytics",
+                "connection_id": "c-1",
+                "folder_id": "f-1",
                 "tags": ["v1", "prod"],
             },
             id="sigma_tags_are_split",
         ),
         pytest.param(
+            POWERBI,
+            {
+                "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "analytics",
+                "HONEYDEW_POWERBI_MODEL_NAME": "M",
+                "HONEYDEW_POWERBI_GROUP_ID": "g-1",
+                "HONEYDEW_SIGMA_FOLDER_ID": "f-1",
+                "HONEYDEW_THOUGHTSPOT_TABLE_NAME": "t",
+            },
+            {
+                "connector_name": "default",
+                "domain": "analytics",
+                "model_name": "M",
+                "group_id": "g-1",
+            },
+            id="other_destinations_inputs_are_ignored",
+        ),
+        pytest.param(
             TABLEAU,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_DOMAIN": "sales",
+                "HONEYDEW_DOMAIN": "analytics",
                 "HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID": "ds-1",
             },
             {
                 "connector_name": "default",
-                "domain": "sales",
+                "domain": "analytics",
                 "existing_datasource_id": "ds-1",
             },
             id="tableau_update_by_id",
-        ),
-        pytest.param(
-            TABLEAU,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_DOMAIN": "sales",
-                "HONEYDEW_TABLEAU_DATASOURCE_NAME": "Sales",
-                "HONEYDEW_TABLEAU_PROJECT_ID": "p-1",
-            },
-            {
-                "connector_name": "default",
-                "domain": "sales",
-                "datasource_name": "Sales",
-                "project_id": "p-1",
-            },
-            id="tableau_create_by_name",
-        ),
-        pytest.param(
-            THOUGHTSPOT,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_DOMAIN": "sales",
-                "HONEYDEW_THOUGHTSPOT_CONNECTION_NAME": "hd",
-            },
-            {
-                "connector_name": "default",
-                "domain": "sales",
-                "connection_name": "hd",
-            },
-            id="thoughtspot",
         ),
     ],
 )
@@ -202,47 +160,30 @@ def test_collect_arguments(
         pytest.param(POWERBI, {}, id="powerbi_missing_everything"),
         pytest.param(
             POWERBI,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_POWERBI_MODEL_NAME": "Sales",
-            },
+            {"HONEYDEW_DOMAIN": "d", "HONEYDEW_POWERBI_MODEL_NAME": "M"},
             id="powerbi_missing_group_id",
         ),
         pytest.param(
+            POWERBI,
+            {"HONEYDEW_POWERBI_MODEL_NAME": "M", "HONEYDEW_POWERBI_GROUP_ID": "g"},
+            id="missing_domain",
+        ),
+        pytest.param(
             SIGMA,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_SIGMA_FOLDER_ID": "def",
-            },
+            {"HONEYDEW_DOMAIN": "d", "HONEYDEW_SIGMA_FOLDER_ID": "f"},
             id="sigma_missing_connection_id",
         ),
         pytest.param(
-            THOUGHTSPOT,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_THOUGHTSPOT_CONNECTION_NAME": "hd",
-            },
-            id="thoughtspot_missing_required_domain",
-        ),
-        pytest.param(
             TABLEAU,
-            {"HONEYDEW_CONNECTOR_NAME": "default"},
+            {"HONEYDEW_DOMAIN": "d"},
             id="tableau_neither_id_nor_name",
         ),
         pytest.param(
             TABLEAU,
             {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_TABLEAU_DATASOURCE_NAME": "Sales",
-            },
-            id="tableau_name_without_project",
-        ),
-        pytest.param(
-            TABLEAU,
-            {
-                "HONEYDEW_CONNECTOR_NAME": "default",
-                "HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID": "ds-1",
-                "HONEYDEW_TABLEAU_PROJECT_ID": "p-1",
+                "HONEYDEW_DOMAIN": "d",
+                "HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID": "ds",
+                "HONEYDEW_TABLEAU_PROJECT_ID": "p",
             },
             id="tableau_id_and_project",
         ),
@@ -267,6 +208,95 @@ def test_domain_is_required_for_every_destination(
     assert "domain" in required
 
 
+# --- change detection ---------------------------------------------------------
+
+
+def _event(tmp_path: Path, payload: dict[str, typing.Any]) -> str:
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return str(path)
+
+
+def _files_response(names: list[str]) -> mock.MagicMock:
+    body = json.dumps([{"filename": name} for name in names]).encode()
+    response = mock.MagicMock()
+    response.__enter__.return_value.read.return_value = body
+    return response
+
+
+@pytest.mark.parametrize(
+    ("workspace", "expected"),
+    [
+        pytest.param("tasty_bytes", True, id="workspace_changed"),
+        pytest.param("tpch_demo", True, id="other_changed_workspace"),
+        pytest.param("finance", False, id="workspace_untouched"),
+    ],
+)
+def test_workspace_changed(tmp_path: Path, workspace: str, expected: bool) -> None:
+    event = _event(tmp_path, {"pull_request": {"number": 7}})
+    with mock.patch(
+        "urllib.request.urlopen",
+        return_value=_files_response(
+            ["tasty_bytes/domains/analytics.yml", "tpch_demo/x.yml", "README.md"],
+        ),
+    ) as urlopen:
+        assert (
+            publish.workspace_changed(
+                workspace,
+                token="t",
+                repository="org/repo",
+                event_path=event,
+            )
+            is expected
+        )
+    request = urlopen.call_args.args[0]
+    assert request.full_url == (
+        "https://api.github.com/repos/org/repo/pulls/7/files?per_page=100&page=1"
+    )
+    assert request.get_header("Authorization") == "Bearer t"
+
+
+def test_workspace_changed_paginates(tmp_path: Path) -> None:
+    """A workspace named only on the second page must still be found."""
+    event = _event(tmp_path, {"pull_request": {"number": 7}})
+    first = [f"a/f{n}.yml" for n in range(publish.CHANGED_FILES_PER_PAGE)]
+    with mock.patch(
+        "urllib.request.urlopen",
+        side_effect=[_files_response(first), _files_response(["b/f.yml"])],
+    ) as urlopen:
+        assert publish.workspace_changed(
+            "b",
+            token="t",
+            repository="org/repo",
+            event_path=event,
+        )
+    assert urlopen.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("token", "payload"),
+    [
+        pytest.param("", {"pull_request": {"number": 7}}, id="no_token"),
+        pytest.param("t", {}, id="not_a_pull_request_event"),
+        pytest.param("t", {"pull_request": {}}, id="pull_request_without_number"),
+    ],
+)
+def test_workspace_changed_publishes_when_undetectable(
+    tmp_path: Path,
+    token: str,
+    payload: dict[str, typing.Any],
+) -> None:
+    """Cannot tell means publish: skipping would silently do nothing on a manual run."""
+    assert publish.workspace_changed(
+        "anything",
+        token=token,
+        repository="org/repo",
+        event_path=_event(tmp_path, payload),
+    )
+
+
+# --- mutation building --------------------------------------------------------
+
 POWERBI_MUTATION = """mutation publish($connector_name: String!, $domain: String!, \
 $model_name: String!, $group_id: String!) {
   sync_powerbi_datasource(connector_name: $connector_name, domain: $domain, \
@@ -276,21 +306,13 @@ model_name: $model_name, group_id: $group_id) {
   }
 }"""
 
-SIGMA_MUTATION = """mutation publish($connector_name: String!, $connection_id: String!, \
-$folder_id: String!, $tags: [String!]!) {
-  sync_sigma_datasource(connector_name: $connector_name, connection_id: $connection_id, \
-folder_id: $folder_id, tags: $tags) {
+SIGMA_MUTATION = """mutation publish($connector_name: String!, $domain: String!, \
+$connection_id: String!, $folder_id: String!, $tags: [String!]!) {
+  sync_sigma_datasource(connector_name: $connector_name, domain: $domain, \
+connection_id: $connection_id, folder_id: $folder_id, tags: $tags) {
     data_model_url
     data_model_id
     tag_error
-  }
-}"""
-
-TABLEAU_MUTATION = """mutation publish($connector_name: String!, \
-$existing_datasource_id: String!) {
-  sync_tableau_datasource(connector_name: $connector_name, \
-existing_datasource_id: $existing_datasource_id) {
-    datasource_url
   }
 }"""
 
@@ -302,9 +324,9 @@ existing_datasource_id: $existing_datasource_id) {
             POWERBI,
             {
                 "connector_name": "default",
-                "domain": "sales",
-                "model_name": "Sales Exec",
-                "group_id": "3f2a",
+                "domain": "analytics",
+                "model_name": "Tasty Bytes Analytics",
+                "group_id": "g-1",
             },
             POWERBI_MUTATION,
             id="powerbi",
@@ -313,18 +335,13 @@ existing_datasource_id: $existing_datasource_id) {
             SIGMA,
             {
                 "connector_name": "default",
-                "connection_id": "abc",
-                "folder_id": "def",
+                "domain": "analytics",
+                "connection_id": "c-1",
+                "folder_id": "f-1",
                 "tags": ["v1"],
             },
             SIGMA_MUTATION,
             id="sigma_omits_unset_arguments_and_types_the_list",
-        ),
-        pytest.param(
-            TABLEAU,
-            {"connector_name": "default", "existing_datasource_id": "ds-1"},
-            TABLEAU_MUTATION,
-            id="tableau_single_result_field",
         ),
     ],
 )
@@ -336,24 +353,55 @@ def test_build_mutation(
     assert publish.build_mutation(destination, values) == expected
 
 
+# --- publishing and reporting -------------------------------------------------
+
+POWERBI_ENV = {
+    "HONEYDEW_CONNECTOR_NAME": "default",
+    "HONEYDEW_DOMAIN": "analytics",
+    "HONEYDEW_POWERBI_MODEL_NAME": "Tasty Bytes Analytics",
+    "HONEYDEW_POWERBI_GROUP_ID": "g-1",
+}
+
+
+def _target(
+    destination: publish.Destination,
+    domain: str = "analytics",
+) -> publish.Target:
+    return publish.Target(
+        destination=destination,
+        workspace="tasty_bytes",
+        branch="prod",
+        domain=domain,
+    )
+
+
+def _publish(
+    destination: publish.Destination,
+    response: typing.Any,
+    **env: str,
+) -> tuple[mock.Mock, publish.PublishResult]:
+    client = mock.Mock()
+    client.gql.return_value = {destination.mutation: response}
+    values = _collect(destination, **(env or POWERBI_ENV))
+    return client, publish.publish(client, _target(destination), values)
+
+
 @pytest.mark.parametrize(
-    ("destination", "response", "expected"),
+    ("destination", "env", "response", "expected"),
     [
         pytest.param(
             POWERBI,
-            {"semantic_model_url": "https://powerbi/1", "refresh_error": None},
-            publish.PublishResult(
-                url="https://powerbi/1",
-                object_id="",
-                warnings=(),
-            ),
+            POWERBI_ENV,
+            {"semantic_model_url": "https://pbi/1", "refresh_error": None},
+            publish.PublishResult(url="https://pbi/1", object_id="", warnings=()),
             id="powerbi_clean",
         ),
         pytest.param(
             POWERBI,
-            {"semantic_model_url": "https://powerbi/1", "refresh_error": "no capacity"},
+            POWERBI_ENV,
+            {"semantic_model_url": "https://pbi/1", "refresh_error": "no capacity"},
             publish.PublishResult(
-                url="https://powerbi/1",
+                url="https://pbi/1",
                 object_id="",
                 warnings=("refresh_error: no capacity",),
             ),
@@ -362,74 +410,50 @@ def test_build_mutation(
         pytest.param(
             SIGMA,
             {
+                "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "analytics",
+                "HONEYDEW_SIGMA_CONNECTION_ID": "c-1",
+                "HONEYDEW_SIGMA_FOLDER_ID": "f-1",
+            },
+            {
                 "data_model_url": "https://sigma/1",
                 "data_model_id": "dm-1",
-                "tag_error": "unknown tag",
+                "tag_error": None,
             },
             publish.PublishResult(
                 url="https://sigma/1",
                 object_id="dm-1",
-                warnings=("tag_error: unknown tag",),
-            ),
-            id="sigma_reports_created_id",
-        ),
-        pytest.param(
-            TABLEAU,
-            {"datasource_url": "https://tableau/1"},
-            publish.PublishResult(
-                url="https://tableau/1",
-                object_id="",
                 warnings=(),
             ),
-            id="tableau",
+            id="sigma_reports_created_id",
         ),
     ],
 )
 def test_publish_maps_the_response(
     destination: publish.Destination,
+    env: dict[str, str],
     response: dict[str, typing.Any],
     expected: publish.PublishResult,
 ) -> None:
-    client = mock.Mock()
-    client.gql.return_value = {destination.mutation: response}
-    result = publish.publish(
-        client,
-        destination,
-        workspace="sales",
-        branch="prod",
-        values={"connector_name": "default"},
-    )
+    _, result = _publish(destination, response, **env)
     assert result == expected
 
 
 def test_publish_does_not_retry() -> None:
     """A retried create would publish the same model twice."""
-    client = mock.Mock()
-    client.gql.return_value = {TABLEAU.mutation: {"datasource_url": "https://x"}}
-    publish.publish(
-        client,
-        TABLEAU,
-        workspace="sales",
-        branch="prod",
-        values={"connector_name": "default"},
+    client, _ = _publish(
+        POWERBI,
+        {"semantic_model_url": "https://pbi/1", "refresh_error": None},
     )
     assert client.gql.call_args.kwargs["retries"] == 0
 
 
 def test_publish_fails_on_null_result() -> None:
-    client = mock.Mock()
-    client.gql.return_value = {TABLEAU.mutation: None}
     with pytest.raises(SystemExit):
-        publish.publish(
-            client,
-            TABLEAU,
-            workspace="sales",
-            branch="prod",
-            values={"connector_name": "default"},
-        )
+        _publish(POWERBI, None)
 
 
-def test_write_outputs(tmp_path: Path) -> None:
+def test_write_outputs_published(tmp_path: Path) -> None:
     output = tmp_path / "output"
     result = publish.PublishResult(
         url="https://sigma/1",
@@ -437,9 +461,21 @@ def test_write_outputs(tmp_path: Path) -> None:
         warnings=("tag_error: line one\nline two",),
     )
     with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}, clear=True):
-        publish.write_outputs(result)
+        publish.write_outputs(publish.Status.PUBLISHED, result)
     assert output.read_text(encoding="utf-8") == (
-        "url=https://sigma/1\nid=dm-1\nwarning=tag_error: line one line two\n"
+        "status=published\n"
+        "url=https://sigma/1\n"
+        "id=dm-1\n"
+        "warning=tag_error: line one line two\n"
+    )
+
+
+def test_write_outputs_skipped(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}, clear=True):
+        publish.write_outputs(publish.Status.SKIPPED, None)
+    assert output.read_text(encoding="utf-8") == (
+        "status=skipped\nurl=\nid=\nwarning=\n"
     )
 
 
@@ -451,26 +487,30 @@ def test_write_step_summary_reports_the_id_to_reuse(tmp_path: Path) -> None:
         warnings=(),
     )
     with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}, clear=True):
-        publish.write_step_summary(
-            SIGMA,
-            result,
-            workspace="sales",
-            branch="prod",
-            domain="sales_exec",
-        )
-    contents = summary.read_text(encoding="utf-8")
-    assert contents == (
+        publish.write_step_summary(_target(SIGMA), publish.Status.PUBLISHED, result)
+    assert summary.read_text(encoding="utf-8") == (
         "## Honeydew publish\n"
         "\n"
-        "| Destination | Workspace | Branch | Domain | Result |\n"
+        "| Workspace | Branch | Domain | Destination | Result |\n"
         "|---|---|---|---|---|\n"
-        "| Sigma | sales | prod | sales_exec | ✅ published |\n"
+        "| tasty_bytes | prod | analytics | Sigma | \u2705 published |\n"
         "\n"
         "[Open in Sigma](https://sigma/1)\n"
         "\n"
-        "`data_model_id`: `dm-1` — pass this back as the update id on the next run "
-        "so it updates this object instead of creating another one.\n"
+        "`data_model_id`: `dm-1` \u2014 pass this back as the update id on the next "
+        "run so it updates this object instead of creating another one.\n"
     )
+
+
+def test_write_step_summary_skipped(tmp_path: Path) -> None:
+    summary = tmp_path / "summary"
+    with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}, clear=True):
+        publish.write_step_summary(_target(POWERBI), publish.Status.SKIPPED, None)
+    contents = summary.read_text(encoding="utf-8")
+    assert "\u23ed\ufe0f skipped \u2014 workspace unchanged" in contents
+
+
+# --- flags and retries --------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -520,6 +560,8 @@ def test_backoff_schedule_outlasts_a_brief_api_restart() -> None:
     assert waits == [1.0, 2.0, 4.0, 8.0, 16.0]
 
 
+# --- the client ---------------------------------------------------------------
+
 ENDPOINT = "https://api.example.com/api/public/v1/graphql"
 
 
@@ -555,7 +597,7 @@ def test_gql_sends_variables_and_context_headers() -> None:
         assert _client().gql(
             "mutation publish($a: String!) {}",
             variables={"a": "b"},
-            workspace="sales",
+            workspace="tasty_bytes",
             branch="prod",
         ) == {"ok": True}
     request = urlopen.call_args.args[0]
@@ -565,27 +607,17 @@ def test_gql_sends_variables_and_context_headers() -> None:
         "variables": {"a": "b"},
     }
     assert request.get_header("Authorization") == "Basic a2V5OnNlY3JldA=="
-    assert request.get_header("X-honeydew-workspace") == "sales"
+    assert request.get_header("X-honeydew-workspace") == "tasty_bytes"
     assert request.get_header("X-honeydew-branch") == "prod"
     assert request.get_header("X-honeydew-client") == "publish-action"
 
 
-def test_gql_omits_variables_when_empty() -> None:
-    with mock.patch(
-        "urllib.request.urlopen",
-        return_value=_response(b'{"data": {"ok": true}}'),
-    ) as urlopen:
-        _client().gql("mutation { reset_workspace }")
-    assert json.loads(urlopen.call_args.args[0].data) == {
-        "query": "mutation { reset_workspace }",
-    }
-
-
-def test_gql_fails_on_graphql_errors() -> None:
+def test_gql_raises_on_graphql_errors() -> None:
+    """Raising rather than exiting is what lets the remaining targets run."""
     with mock.patch(
         "urllib.request.urlopen",
         return_value=_response(b'{"errors": [{"message": "no such domain"}]}'),
-    ), pytest.raises(SystemExit):
+    ), pytest.raises(publish.ApiError, match="no such domain"):
         _client().gql("query {}")
 
 
@@ -600,7 +632,7 @@ def test_retry_count_is_per_request(retries: int, expected_calls: int) -> None:
     with mock.patch(
         "urllib.request.urlopen",
         side_effect=_http_error(503),
-    ) as urlopen, mock.patch("time.sleep"), pytest.raises(SystemExit):
+    ) as urlopen, mock.patch("time.sleep"), pytest.raises(publish.ApiError):
         _client().gql("query {}", retries=retries)
     assert urlopen.call_count == expected_calls
 
@@ -623,7 +655,8 @@ def test_retry_after_header_drives_the_sleep() -> None:
     assert sleep.call_args_list == [mock.call(12.0)]
 
 
-def test_unauthorized_is_not_retried() -> None:
+def test_unauthorized_aborts_the_whole_run() -> None:
+    """A bad key cannot be worked around by trying the next target."""
     with mock.patch(
         "urllib.request.urlopen",
         side_effect=_http_error(401),

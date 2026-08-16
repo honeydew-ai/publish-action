@@ -2,8 +2,8 @@ name: 'Honeydew Publish'
 # The GitHub Marketplace rejects a description of 125 characters or more, counting
 # the folded single-line form — keep this comfortably under that.
 description: >-
-  Publish a Honeydew semantic-layer workspace branch to a BI tool: Power BI,
-  Sigma, Tableau or ThoughtSpot.
+  Publish a Honeydew domain to a BI tool: Power BI, Sigma, Tableau or
+  ThoughtSpot.
 author: 'Honeydew Data Inc.'
 branding:
   icon: 'upload-cloud'
@@ -16,21 +16,23 @@ inputs:
   api-secret:
     description: 'Honeydew API key secret. Store it as a GitHub secret.'
     required: true
-  base-url:
+  workspace:
     description: >-
-      Base URL of the Honeydew API. Only set this if your organization uses a
-      custom Honeydew hostname (see Settings > API in the Honeydew UI).
-    required: false
-    default: 'https://api.honeydew.cloud'
+      Honeydew workspace to publish from. Also the repository directory whose
+      changes decide whether this publish runs at all.
+    required: true
+  domain:
+    description: 'Domain to publish.'
+    required: true
   target:
     description: >-
       Where to publish: "powerbi", "sigma", "tableau" or "thoughtspot".
     required: true
-  workspace:
+  github-token:
     description: >-
-      Honeydew workspace name to publish. When omitted, it is detected from the
-      git branch name (Honeydew development branches are named
-      "<workspace>/<branch>").
+      Token used to read which files the merged pull request changed, so the
+      publish runs only when "workspace" changed. Pass "${{ github.token }}"
+      and grant "pull-requests: read". When omitted, the publish always runs.
     required: false
   branch:
     description: >-
@@ -38,15 +40,18 @@ inputs:
       pull request produces. Set it to publish a development branch instead.
     required: false
     default: 'prod'
-  domain:
-    description: 'Domain to publish.'
-    required: true
   connector-name:
     description: >-
       Name of the connector configured in Honeydew for the target tool. A
       connector configured through the Honeydew UI is named "default".
     required: false
     default: 'default'
+  base-url:
+    description: >-
+      Base URL of the Honeydew API. Only set this if your organization uses a
+      custom Honeydew hostname (see Settings > API in the Honeydew UI).
+    required: false
+    default: 'https://api.honeydew.cloud'
   reload:
     description: >-
       Reload the workspace from git before publishing, so the published model
@@ -129,6 +134,11 @@ inputs:
     required: false
 
 outputs:
+  status:
+    description: >-
+      "published", or "skipped" when the workspace did not change in the merged
+      pull request.
+    value: ${{ steps.publish.outputs.status }}
   url:
     description: 'Link to the published object in the target tool.'
     value: ${{ steps.publish.outputs.url }}
@@ -147,18 +157,19 @@ runs:
   using: 'composite'
   steps:
     - id: publish
-      name: Publish Honeydew workspace
+      name: Publish Honeydew domain
       shell: bash
       run: python3 "$GITHUB_ACTION_PATH/publish.py"
       env:
         HONEYDEW_API_KEY: ${{ inputs.api-key }}
         HONEYDEW_API_SECRET: ${{ inputs.api-secret }}
-        HONEYDEW_BASE_URL: ${{ inputs.base-url }}
-        HONEYDEW_TARGET: ${{ inputs.target }}
         HONEYDEW_WORKSPACE: ${{ inputs.workspace }}
-        HONEYDEW_BRANCH: ${{ inputs.branch }}
         HONEYDEW_DOMAIN: ${{ inputs.domain }}
+        HONEYDEW_TARGET: ${{ inputs.target }}
+        HONEYDEW_GITHUB_TOKEN: ${{ inputs.github-token }}
+        HONEYDEW_BRANCH: ${{ inputs.branch }}
         HONEYDEW_CONNECTOR_NAME: ${{ inputs.connector-name }}
+        HONEYDEW_BASE_URL: ${{ inputs.base-url }}
         HONEYDEW_RELOAD: ${{ inputs.reload }}
         HONEYDEW_FAIL_ON_WARNING: ${{ inputs.fail-on-warning }}
         HONEYDEW_POWERBI_MODEL_NAME: ${{ inputs.powerbi-model-name }}

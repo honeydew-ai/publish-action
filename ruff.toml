@@ -23,10 +23,16 @@ select = [
 # D1: missing docstrings — not required in this small codebase
 # D203/D213: conflict with D211/D212 (one of each pair must be disabled)
 # T201: print is the output channel of a GitHub Action step
-ignore = ["E203", "D1", "D203", "D213", "T201"]
+# EM101/EM102/TRY003: these rules keep exception text short so tracebacks stay
+#   readable in a library. Here the message IS the product — it is caught and
+#   rendered as the GitHub annotation the user reads — so hoisting each one into
+#   a variable, or shortening it, would only make the tool worse to use.
+ignore = ["E203", "D1", "D203", "D213", "T201", "EM101", "EM102", "TRY003"]
 
 [lint.per-file-ignores]
 # S101: assert is how pytest tests assert
 # S106: fake credentials passed to keyword arguments in tests
 # FBT001/FBT002: parametrized booleans arrive as positional test arguments
-"test_*.py" = ["S101", "S106", "FBT001", "FBT002"]
+# PLR2004: comparing against literal counts is the point of an assertion
+# ANN401: mock payloads are deliberately untyped
+"test_*.py" = ["S101", "S106", "FBT001", "FBT002", "PLR2004", "ANN401"]
