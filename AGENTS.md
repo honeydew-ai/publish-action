@@ -48,6 +48,13 @@ Argument combinations a single `required` flag cannot express go in an
   the Honeydew API.
 - **Never put untrusted GitHub event data into shell commands.** Inputs flow
   into Python via `env:` only.
+- **The action never decides whether to run.** Which workspace a workflow
+  publishes, and whether it runs at all, is the workflow's `paths:` filter's
+  job. Do not add change detection here: it would duplicate what GitHub already
+  does natively, and cost an API call per job in a matrix.
+- **One run publishes one target.** Callers fan out over destinations, so each
+  gets its own pass, fail, log and re-run. Batching several publishes into one
+  run collapses that into a single red dot and makes partial re-runs impossible.
 - **Never retry a publish.** `sync_*` mutations are not idempotent when they
   create; a retry after a timeout can publish the same model twice. `publish()`
   passes `retries=0`, and only idempotent calls (`reset_workspace`, queries) use

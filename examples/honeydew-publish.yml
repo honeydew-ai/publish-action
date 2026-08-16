@@ -1,0 +1,75 @@
+# The shared half of the per-workspace pattern: one copy of the publish logic that
+# every per-workspace workflow calls. Put it in .github/workflows/ alongside them.
+#
+# One job per destination, named after the combination, so the Actions UI shows
+# exactly what deployed and lets you re-run a single failed destination.
+---
+name: Honeydew publish (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      workspace:
+        description: 'Honeydew workspace to publish from.'
+        required: true
+        type: string
+      domain:
+        description: 'Domain to publish.'
+        required: true
+        type: string
+      branch:
+        description: 'Honeydew branch to publish. Defaults to prod.'
+        required: false
+        default: 'prod'
+        type: string
+      powerbi-model-name:
+        required: false
+        default: ''
+        type: string
+      powerbi-group-id:
+        required: false
+        default: ''
+        type: string
+      sigma-connection-id:
+        required: false
+        default: ''
+        type: string
+      sigma-folder-id:
+        required: false
+        default: ''
+        type: string
+      sigma-existing-data-model-id:
+        description: >-
+          Set after the first run, from the id reported in the job summary.
+          Without it Sigma creates a new data model on every publish.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: ${{ inputs.domain }} → ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One destination failing must not cancel the others.
+      fail-fast: false
+      matrix:
+        target: [powerbi, sigma]
+    steps:
+      - uses: honeydew-ai/publish-action@v1
+        with:
+          api-key: ${{ secrets.HONEYDEW_API_KEY }}
+          api-secret: ${{ secrets.HONEYDEW_API_SECRET }}
+          workspace: ${{ inputs.workspace }}
+          domain: ${{ inputs.domain }}
+          branch: ${{ inputs.branch }}
+          target: ${{ matrix.target }}
+          # Inputs for the other destination are ignored, so one step serves both.
+          powerbi-model-name: ${{ inputs.powerbi-model-name }}
+          powerbi-group-id: ${{ inputs.powerbi-group-id }}
+          sigma-connection-id: ${{ inputs.sigma-connection-id }}
+          sigma-folder-id: ${{ inputs.sigma-folder-id }}
+          sigma-existing-data-model-id: ${{ inputs.sigma-existing-data-model-id }}

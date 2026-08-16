@@ -68,36 +68,40 @@ def test_resolve_destination_fails(target: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("workspace_input", "git_ref", "expected"),
+    ("value", "expected"),
     [
-        pytest.param("sales", "anything", "sales", id="explicit_input_wins"),
-        pytest.param("", "sales/q3-fixes", "sales", id="pull_request_head_ref"),
-        pytest.param("", "sales/prod/a36d4900", "sales", id="system_managed_branch"),
+        pytest.param("sales", "sales", id="plain"),
+        pytest.param("  sales  ", "sales", id="stripped"),
     ],
 )
-def test_resolve_workspace(
-    workspace_input: str,
-    git_ref: str,
-    expected: str,
-) -> None:
-    assert (
-        publish.resolve_workspace(workspace_input=workspace_input, git_ref=git_ref)
-        == expected
-    )
+def test_require_env(value: str, expected: str) -> None:
+    with mock.patch.dict(os.environ, {"HONEYDEW_WORKSPACE": value}, clear=True):
+        assert publish.require_env("HONEYDEW_WORKSPACE") == expected
 
 
 @pytest.mark.parametrize(
-    "git_ref",
+    "env",
     [
-        pytest.param("main", id="default_branch"),
-        pytest.param("some-feature", id="flat_branch"),
-        pytest.param("sales/dev/abc123", id="three_segments_non_prod_middle"),
-        pytest.param("", id="no_ref"),
+        pytest.param({}, id="unset"),
+        pytest.param({"HONEYDEW_WORKSPACE": ""}, id="empty"),
+        pytest.param({"HONEYDEW_WORKSPACE": "   "}, id="whitespace_only"),
     ],
 )
-def test_resolve_workspace_fails(git_ref: str) -> None:
-    with pytest.raises(SystemExit):
-        publish.resolve_workspace(workspace_input="", git_ref=git_ref)
+def test_require_env_fails(env: dict[str, str]) -> None:
+    with mock.patch.dict(os.environ, env, clear=True), pytest.raises(SystemExit):
+        publish.require_env("HONEYDEW_WORKSPACE")
+
+
+def test_the_git_ref_is_never_read() -> None:
+    """What a workflow publishes is its own "paths:" filter's business, not ours.
+
+    Inferring the workspace from the branch made the published target depend on
+    which branch triggered the run, which is wrong in a repository holding many
+    workspaces.
+    """
+    source = Path(__file__).with_name("publish.py").read_text(encoding="utf-8")
+    assert "GITHUB_HEAD_REF" not in source
+    assert "GITHUB_REF_NAME" not in source
 
 
 def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.Any]:

@@ -1,0 +1,33 @@
+# One of these per workspace, in .github/workflows/ of the repository that stores
+# your Honeydew metadata.
+#
+# The "paths:" filter is the whole gate: GitHub runs this workflow only when the
+# merged pull request touched the workspace's directory. Nothing needs to detect
+# changes at run time, so no token and no API call are involved.
+#
+# Everything else lives in the reusable workflow, so adding a workspace is this
+# file and nothing more.
+---
+name: Publish Honeydew — sales
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths: ['sales/**']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true
+    uses: ./.github/workflows/honeydew-publish.yml
+    with:
+      workspace: sales
+      domain: sales_exec
+      powerbi-model-name: Sales Exec
+      powerbi-group-id: 3f2a1b4c-0000-0000-0000-000000000000
+      sigma-connection-id: abc123
+      sigma-folder-id: def456
+    secrets: inherit
