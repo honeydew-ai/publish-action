@@ -127,7 +127,7 @@ builds — or if you prefer to review each update yourself — pin to a full rel
 commit SHA instead:
 
 ```yaml
-      - uses: honeydew-ai/publish-action@v1.0.0   # exact release
+      - uses: honeydew-ai/publish-action@v1.0.1   # exact release
       # or
       - uses: honeydew-ai/publish-action@<commit-sha>
 ```
