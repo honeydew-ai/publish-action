@@ -115,9 +115,10 @@ inputs:
   tableau-authentication:
     description: >-
       Tableau: how the data source authenticates to Honeydew — "USER_PASS" (the
-      default), or "OAUTH" so each Tableau user connects with their own
-      credentials. Only applies when creating a data source: an existing one
-      keeps the method it was created with.
+      default), a Honeydew username and password supplied in Tableau, or "OAUTH"
+      so each Tableau user signs in with their own credentials. Only applies when
+      creating a data source: an existing one keeps the method it was created
+      with.
     required: false
 
   # --- ThoughtSpot ----------------------------------------------------------

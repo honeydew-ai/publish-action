@@ -232,13 +232,13 @@ Tableau requires **either** `tableau-existing-datasource-id`, **or** both
 `tableau-datasource-name` and `tableau-project-id` — the action fails if you set neither or
 mix the two.
 
-`tableau-authentication` picks how the data source it creates authenticates to Honeydew:
-`USER_PASS` embeds the connector's service account, so everyone opening the workbook queries
-as it, while `OAUTH` makes each Tableau user connect with their own Honeydew credentials —
-which needs an [OAuth client registered for Honeydew](https://honeydew.ai/docs/integration/bi-tools/tableau-integration#adding-an-oauth-client-for-honeydew)
-in Tableau. A data source keeps the method it was created with, so setting it alongside
-`tableau-existing-datasource-id` fails rather than silently doing nothing; to switch an
-existing data source, create a new one.
+`tableau-authentication` picks how the data source it creates authenticates to Honeydew.
+`USER_PASS` connects with a Honeydew username and password — an API key and secret, or a
+user's own login — supplied in Tableau after publishing. `OAUTH` has each Tableau user sign in
+to Honeydew themselves, and needs an [OAuth client registered for Honeydew](https://honeydew.ai/docs/integration/bi-tools/tableau-integration#adding-an-oauth-client-for-honeydew)
+in Tableau. Either way the action publishes no credentials of its own. A data source keeps the
+method it was created with, so setting it alongside `tableau-existing-datasource-id` fails
+rather than silently doing nothing; to switch an existing data source, create a new one.
 
 ## Outputs
 

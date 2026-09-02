@@ -52,8 +52,9 @@ jobs:
       # ...or a name and a project, to create one. Not both.
       # tableau-datasource-name: Sales Exec
       # tableau-project-id: 1d2e3f00-0000-0000-0000-000000000000
-      # A created data source embeds a service account by default. Set OAUTH to
-      # have every Tableau user connect with their own Honeydew credentials.
+      # By default the data source connects with a Honeydew username and
+      # password, entered in Tableau after publishing. Set OAUTH to have each
+      # Tableau user sign in to Honeydew with their own credentials instead.
       # tableau-authentication: OAUTH
 
       # --- ThoughtSpot ----------------------------------------------------
