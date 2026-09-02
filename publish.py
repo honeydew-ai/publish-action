@@ -402,7 +402,7 @@ def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
             if items := [part.strip() for part in raw.split(",") if part.strip()]:
                 values[argument.api_name] = items
         elif argument.choices:
-            if not (choice := _match_choice(raw, argument.choices)):
+            if not (choice := _match_choice(raw, choices=argument.choices)):
                 fail(
                     f"Invalid value '{raw}' for '{argument.input_name}'. Expected "
                     f"one of: {', '.join(argument.choices)}.",
@@ -420,7 +420,7 @@ def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
     return values
 
 
-def _match_choice(raw: str, choices: tuple[str, ...]) -> str:
+def _match_choice(raw: str, *, choices: tuple[str, ...]) -> str:
     """Match an enum value case-insensitively, returning the API's own spelling.
 
     GraphQL enum values are case-sensitive and conventionally upper-case, which is
