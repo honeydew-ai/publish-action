@@ -99,6 +99,13 @@ on:
         required: false
         default: ''
         type: string
+      tableau-authentication:
+        description: >-
+          How a created data source authenticates to Honeydew: USER_PASS (the
+          default) or OAUTH. Rejected together with an existing data source id.
+        required: false
+        default: ''
+        type: string
 
       # --- ThoughtSpot ------------------------------------------------------
       thoughtspot-connection-name:
@@ -147,5 +154,6 @@ jobs:
           tableau-existing-datasource-id: ${{ inputs.tableau-existing-datasource-id }}
           tableau-datasource-name: ${{ inputs.tableau-datasource-name }}
           tableau-project-id: ${{ inputs.tableau-project-id }}
+          tableau-authentication: ${{ inputs.tableau-authentication }}
           thoughtspot-connection-name: ${{ inputs.thoughtspot-connection-name }}
           thoughtspot-table-name: ${{ inputs.thoughtspot-table-name }}

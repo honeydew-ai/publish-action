@@ -52,6 +52,10 @@ jobs:
       # ...or a name and a project, to create one. Not both.
       # tableau-datasource-name: Sales Exec
       # tableau-project-id: 1d2e3f00-0000-0000-0000-000000000000
+      # By default the data source connects with a Honeydew username and
+      # password, entered in Tableau after publishing. Set OAUTH to have each
+      # Tableau user sign in to Honeydew with their own credentials instead.
+      # tableau-authentication: OAUTH
 
       # --- ThoughtSpot ----------------------------------------------------
       # Publishing again with the same table name updates that table.

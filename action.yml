@@ -112,6 +112,14 @@ inputs:
       Tableau: ID of the data source to update. List them with the
       tableau_honeydew_datasources GraphQL query.
     required: false
+  tableau-authentication:
+    description: >-
+      Tableau: how the data source authenticates to Honeydew — "USER_PASS" (the
+      default), a Honeydew username and password supplied in Tableau, or "OAUTH"
+      so each Tableau user signs in with their own credentials. Only applies when
+      creating a data source: an existing one keeps the method it was created
+      with.
+    required: false
 
   # --- ThoughtSpot ----------------------------------------------------------
   thoughtspot-connection-name:
@@ -168,5 +176,6 @@ runs:
         HONEYDEW_TABLEAU_DATASOURCE_NAME: ${{ inputs.tableau-datasource-name }}
         HONEYDEW_TABLEAU_PROJECT_ID: ${{ inputs.tableau-project-id }}
         HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID: ${{ inputs.tableau-existing-datasource-id }}
+        HONEYDEW_TABLEAU_AUTHENTICATION: ${{ inputs.tableau-authentication }}
         HONEYDEW_THOUGHTSPOT_CONNECTION_NAME: ${{ inputs.thoughtspot-connection-name }}
         HONEYDEW_THOUGHTSPOT_TABLE_NAME: ${{ inputs.thoughtspot-table-name }}

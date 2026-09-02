@@ -177,6 +177,24 @@ def _collect(destination: publish.Destination, **env: str) -> dict[str, typing.A
             id="tableau_create_by_name",
         ),
         pytest.param(
+            TABLEAU,
+            {
+                "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
+                "HONEYDEW_TABLEAU_DATASOURCE_NAME": "Sales",
+                "HONEYDEW_TABLEAU_PROJECT_ID": "p-1",
+                "HONEYDEW_TABLEAU_AUTHENTICATION": "oauth",
+            },
+            {
+                "connector_name": "default",
+                "domain": "sales",
+                "datasource_name": "Sales",
+                "project_id": "p-1",
+                "authentication": "OAUTH",
+            },
+            id="tableau_authentication_takes_the_api_spelling",
+        ),
+        pytest.param(
             THOUGHTSPOT,
             {
                 "HONEYDEW_CONNECTOR_NAME": "default",
@@ -250,6 +268,27 @@ def test_collect_arguments(
             },
             id="tableau_id_and_project",
         ),
+        pytest.param(
+            TABLEAU,
+            {
+                "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
+                "HONEYDEW_TABLEAU_DATASOURCE_NAME": "Sales",
+                "HONEYDEW_TABLEAU_PROJECT_ID": "p-1",
+                "HONEYDEW_TABLEAU_AUTHENTICATION": "sso",
+            },
+            id="tableau_unknown_authentication",
+        ),
+        pytest.param(
+            TABLEAU,
+            {
+                "HONEYDEW_CONNECTOR_NAME": "default",
+                "HONEYDEW_DOMAIN": "sales",
+                "HONEYDEW_TABLEAU_EXISTING_DATASOURCE_ID": "ds-1",
+                "HONEYDEW_TABLEAU_AUTHENTICATION": "OAUTH",
+            },
+            id="tableau_authentication_on_an_update",
+        ),
     ],
 )
 def test_collect_arguments_fails(
@@ -298,6 +337,16 @@ existing_datasource_id: $existing_datasource_id) {
   }
 }"""
 
+TABLEAU_OAUTH_MUTATION = """mutation publish($connector_name: String!, \
+$domain: String!, $datasource_name: String!, $project_id: String!, \
+$authentication: TableauAuthentication!) {
+  sync_tableau_datasource(connector_name: $connector_name, domain: $domain, \
+datasource_name: $datasource_name, project_id: $project_id, \
+authentication: $authentication) {
+    datasource_url
+  }
+}"""
+
 
 @pytest.mark.parametrize(
     ("destination", "values", "expected"),
@@ -329,6 +378,18 @@ existing_datasource_id: $existing_datasource_id) {
             {"connector_name": "default", "existing_datasource_id": "ds-1"},
             TABLEAU_MUTATION,
             id="tableau_single_result_field",
+        ),
+        pytest.param(
+            TABLEAU,
+            {
+                "connector_name": "default",
+                "domain": "sales",
+                "datasource_name": "Sales",
+                "project_id": "p-1",
+                "authentication": "OAUTH",
+            },
+            TABLEAU_OAUTH_MUTATION,
+            id="tableau_declares_the_authentication_enum_type",
         ),
     ],
 )
