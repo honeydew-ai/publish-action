@@ -169,7 +169,7 @@ works depends on the destination:
 |---|---|
 | **Power BI** | Updates the model with the same `powerbi-model-name` in the workspace. |
 | **ThoughtSpot** | Updates the table with the same `thoughtspot-table-name`. |
-| **Tableau** | Pass `tableau-existing-datasource-id` to update. `tableau-datasource-name` + `tableau-project-id` **create** a new data source. |
+| **Tableau** | Pass `tableau-existing-datasource-id` to update. `tableau-datasource-name` + `tableau-project-id` **create** a new data source, the only point at which `tableau-authentication` can be chosen. |
 | **Sigma** | Pass `sigma-existing-data-model-id` to update. Without it, a new data model is **created** every run. |
 
 For Tableau and Sigma, run the action once to create the object, take the id from the job
@@ -224,12 +224,21 @@ below take.
 | `tableau-datasource-name` | Tableau | no | Name of the data source to create. Requires `tableau-project-id`. |
 | `tableau-project-id` | Tableau | no | ID of the project to create the data source in. |
 | `tableau-existing-datasource-id` | Tableau | no | ID of the data source to update. |
+| `tableau-authentication` | Tableau | no | `USER_PASS` (the default) or `OAUTH`. Only when creating a data source. |
 | `thoughtspot-connection-name` | ThoughtSpot | yes | Name of the Honeydew connection in ThoughtSpot. |
 | `thoughtspot-table-name` | ThoughtSpot | no | Name of the table. Defaults to the domain's display name. |
 
 Tableau requires **either** `tableau-existing-datasource-id`, **or** both
 `tableau-datasource-name` and `tableau-project-id` — the action fails if you set neither or
 mix the two.
+
+`tableau-authentication` picks how the data source it creates authenticates to Honeydew:
+`USER_PASS` embeds the connector's service account, so everyone opening the workbook queries
+as it, while `OAUTH` makes each Tableau user connect with their own Honeydew credentials —
+which needs an [OAuth client registered for Honeydew](https://honeydew.ai/docs/integration/bi-tools/tableau-integration#adding-an-oauth-client-for-honeydew)
+in Tableau. A data source keeps the method it was created with, so setting it alongside
+`tableau-existing-datasource-id` fails rather than silently doing nothing; to switch an
+existing data source, create a new one.
 
 ## Outputs
 

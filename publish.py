@@ -55,6 +55,7 @@ class ArgKind(enum.StrEnum):
 
     STRING = "String"
     STRING_LIST = "[String!]"
+    TABLEAU_AUTHENTICATION = "TableauAuthentication"
 
 
 ArgValue = str | list[str]
@@ -68,6 +69,8 @@ class Argument:
     input_name: str
     required: bool = False
     kind: ArgKind = ArgKind.STRING
+    # Values a GraphQL enum argument accepts, in the API's own spelling.
+    choices: tuple[str, ...] = ()
 
     @property
     def env_name(self) -> str:
@@ -95,7 +98,11 @@ class Destination:
 
 
 def _check_tableau_arguments(values: dict[str, ArgValue]) -> str:
-    """Tableau updates by id and creates by name+project; anything else is an error."""
+    """Tableau updates by id and creates by name+project; anything else is an error.
+
+    The authentication method is fixed when the data source is created, so it is
+    an argument of a create and a rejected one on an update.
+    """
     updating = "existing_datasource_id" in values
     creating = "datasource_name" in values and "project_id" in values
     if updating and ("datasource_name" in values or "project_id" in values):
@@ -103,6 +110,13 @@ def _check_tableau_arguments(values: dict[str, ArgValue]) -> str:
             "Set either 'tableau-existing-datasource-id' to update an existing data "
             "source, or both 'tableau-datasource-name' and 'tableau-project-id' to "
             "create one — not both."
+        )
+    if updating and "authentication" in values:
+        return (
+            "'tableau-authentication' applies only when creating a data source: an "
+            "existing one keeps the authentication method it was created with. Drop "
+            "the input, or create a new data source with 'tableau-datasource-name' "
+            "and 'tableau-project-id'."
         )
     if not updating and not creating:
         return (
@@ -158,6 +172,12 @@ DESTINATIONS: tuple[Destination, ...] = (
             Argument("datasource_name", "tableau-datasource-name"),
             Argument("project_id", "tableau-project-id"),
             Argument("existing_datasource_id", "tableau-existing-datasource-id"),
+            Argument(
+                "authentication",
+                "tableau-authentication",
+                kind=ArgKind.TABLEAU_AUTHENTICATION,
+                choices=("USER_PASS", "OAUTH"),
+            ),
         ),
         url_field="datasource_url",
         extra_check=_check_tableau_arguments,
@@ -381,6 +401,13 @@ def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
         if argument.kind is ArgKind.STRING_LIST:
             if items := [part.strip() for part in raw.split(",") if part.strip()]:
                 values[argument.api_name] = items
+        elif argument.choices:
+            if not (choice := _match_choice(raw, argument.choices)):
+                fail(
+                    f"Invalid value '{raw}' for '{argument.input_name}'. Expected "
+                    f"one of: {', '.join(argument.choices)}.",
+                )
+            values[argument.api_name] = choice
         else:
             values[argument.api_name] = raw
     if missing:
@@ -391,6 +418,17 @@ def collect_arguments(destination: Destination) -> dict[str, ArgValue]:
     if destination.extra_check and (error := destination.extra_check(values)):
         fail(error)
     return values
+
+
+def _match_choice(raw: str, choices: tuple[str, ...]) -> str:
+    """Match an enum value case-insensitively, returning the API's own spelling.
+
+    GraphQL enum values are case-sensitive and conventionally upper-case, which is
+    not how anyone writes a workflow input; accepting either spelling turns a
+    server-side rejection mid-publish into no error at all.
+    """
+    folded = raw.casefold()
+    return next((choice for choice in choices if choice.casefold() == folded), "")
 
 
 def _quoted_list(names: list[str]) -> str:
