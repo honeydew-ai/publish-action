@@ -32,7 +32,7 @@ repos:
         args: ["--quiet"]
         files: ^(\.github/workflows/[^/]+|examples/[^/]+)$
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.7
+    rev: v1.7.12
     hooks:
       # Semantics the schema cannot express: expression types, context
       # availability, and a caller's inputs against the reusable workflow it
