@@ -39,6 +39,13 @@ repos:
       # calls. Also cover examples/, which customers copy verbatim.
       - id: actionlint
         files: ^(\.github/workflows/|examples/)
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.32.0
+    hooks:
+      # Security audit of the CI config. --offline keeps it deterministic and
+      # token-free (the online audits need a GitHub token).
+      - id: zizmor
+        args: ["--no-progress", "--offline"]
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:

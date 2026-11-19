@@ -1,0 +1,9 @@
+---
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # honeydew-publish.yml is the reusable workflow customers copy; it shows
+        # the documented v1 pin of this repo's own action.
+        honeydew-ai/publish-action: ref-pin
+        "*": hash-pin
